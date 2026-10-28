@@ -1,0 +1,14 @@
+# Build output
+target/
+
+# IntelliJ
+.idea/
+*.iml
+out/
+
+# macOS
+.DS_Store
+
+# Save games (SQLite files created at runtime)
+*.db
+_to_delete/
