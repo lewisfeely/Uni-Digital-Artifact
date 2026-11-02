@@ -34,9 +34,22 @@ public class GameMap {
         return row >= 0 && row < getRows() && col >= 0 && col < getCols();
     }
 
-    /** True if an entity is allowed to stand on this cell. */
+    /** True if an entity is allowed to stand on this cell. Walls and locked doors block. */
     public boolean isWalkable(int row, int col) {
-        return isInBounds(row, col) && tiles[row][col] != Tile.WALL;
+        if (!isInBounds(row, col)) {
+            return false;
+        }
+        int tile = tiles[row][col];
+        return !Tile.isWall(tile) && tile != Tile.DOOR && tile != Tile.DART_TRAP;
+    }
+
+    /** True if a dart flying into this cell stops here. Darts fly over chests, keys and open doors. */
+    public boolean blocksDarts(int row, int col) {
+        if (!isInBounds(row, col)) {
+            return true;
+        }
+        int tile = tiles[row][col];
+        return Tile.isWall(tile) || tile == Tile.DOOR || tile == Tile.DART_TRAP;
     }
 
     /** Counts how many cells contain the given tile type - a handy loop exercise. */
