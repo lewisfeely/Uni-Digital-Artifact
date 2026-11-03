@@ -28,16 +28,25 @@ import java.util.Map;
  * Draws the game state onto a JavaFX canvas.
  * Positions come from the model: entities store where they really are (x/y in squares),
  * so this class just multiplies by TILE_SIZE and draws.
+ *
+ * This class only READS the game state - it never changes the rules. The one thing it
+ * keeps for itself is purely visual (how open each chest's lid is), because that has no
+ * effect on the game.
+ *
+ * Everything is redrawn from scratch every frame, back to front: floor and walls first,
+ * then chests, traps, rats, the player, attacks, and finally the bar at the bottom.
  */
 public class GameRenderer {
-    public static final int TILE_SIZE = 32;
-    public static final int HUD_HEIGHT = 60;
+    // ---- screen layout ----
+    public static final int TILE_SIZE = 32;    // pixels per square
+    public static final int HUD_HEIGHT = 60;   // pixels for the bar under the map
 
     // ---- player animation settings ----
     /** Frames in each row of player.png (frames are square, laid out left to right). */
     private static final int WALK_FRAMES = 4;
     /** Same idea as the FPS setting in Piskel's preview. */
     private static final double ANIMATION_FPS = 8;
+    /** How long each frame is shown, in nanoseconds (1 second = 1,000,000,000 ns). */
     private static final long FRAME_TIME_NANOS = (long) (1_000_000_000 / ANIMATION_FPS);
 
     // ---- combat art ----
@@ -45,10 +54,11 @@ public class GameRenderer {
     private final Image ratSheet = loadImage("rat.png");
     private final Image arrowImage = loadImage("arrow.png");   // drawn pointing right
     private final Image swingImage = loadImage("swing.png");   // arc drawn bulging to the right
-    private static final long RAT_STEP_NANOS = 120_000_000L;
+    private static final long RAT_STEP_NANOS = 120_000_000L;   // swap scurry frames every 0.12 s
     /** F3 toggles drawing every hitbox as an outline - handy for tuning combat. */
     private boolean showHitboxes = false;
 
+    // ---- tiles, items and the player (each image is loaded once, when the renderer is created) ----
     private final Image floorImage = loadImage("floor.png");
     private final Image doorImage = loadImage("door.png");
     private final Image doorOpenImage = loadImage("door_open.png");
@@ -65,9 +75,9 @@ public class GameRenderer {
     private final Image wallRockImage = loadImage("wall_rock.png");
     private final Image torchSheet = loadImage("torch.png");               // 3 flame frames side by side
     private static final int TORCH_FRAMES = 3;
-    private static final long TORCH_FRAME_NANOS = 130_000_000L;
-    private static final Color WALL_RIM = Color.rgb(70, 64, 80);
-    private static final Color WALL_SHADOW = Color.rgb(0, 0, 0, 0.27);
+    private static final long TORCH_FRAME_NANOS = 130_000_000L;           // flame changes every 0.13 s
+    private static final Color WALL_RIM = Color.rgb(70, 64, 80);          // lit edge where rock meets a room
+    private static final Color WALL_SHADOW = Color.rgb(0, 0, 0, 0.27);    // see-through black (27% opaque)
 
     // ---- chest animation ----
     // ChestAnimation.png frames: 0 closed, 1 lid lifting, 2 open, 3 open with sparkles
@@ -87,7 +97,7 @@ public class GameRenderer {
      * This only affects how chests look, so it lives here in the view, not in GameState.
      */
     private final Map<Integer, Double> chestOpenness = new HashMap<>();
-    private long lastRenderTime = -1;
+    private long lastRenderTime = -1;   // used to work out how much time passed for the chest animation
 
     /** Size of one frame in player.png, worked out from the image (16 for a 64x16 strip). */
     private final int playerFrameSize = (int) playerSheet.getWidth() / WALK_FRAMES;
@@ -103,6 +113,7 @@ public class GameRenderer {
         return new Image(stream);
     }
 
+    /** Switches the F3 debug view on or off (! flips true to false and back). */
     public void toggleHitboxes() {
         showHitboxes = !showHitboxes;
     }
@@ -116,13 +127,16 @@ public class GameRenderer {
         double width = gc.getCanvas().getWidth();
         double height = gc.getCanvas().getHeight();
 
+        // ---- clear the whole canvas to black ----
         gc.setImageSmoothing(false);   // keep pixel art crisp
         gc.setFill(Color.BLACK);
         gc.fillRect(0, 0, width, height);
 
+        // seconds since the last frame (0 on the very first frame)
         double deltaSeconds = lastRenderTime < 0 ? 0 : (now - lastRenderTime) / 1_000_000_000.0;
         lastRenderTime = now;
 
+        // ---- draw back to front: anything drawn later appears on top ----
         drawMap(gc, map, now);
         drawChests(gc, state, deltaSeconds, now);
         drawTorchGlow(gc, map, now);
@@ -142,21 +156,27 @@ public class GameRenderer {
 
     // ------------------------------------------------------------------ combat drawing
 
+    /** Draws every rat with the right animation frame, facing the right way, plus its warning and health bar. */
     private void drawEnemies(GraphicsContext gc, GameState state, long now) {
-        int frameSize = (int) ratSheet.getHeight();
+        int frameSize = (int) ratSheet.getHeight();   // frames are square, so height = frame size
         for (Enemy enemy : state.getEnemies()) {
+            // blinking: (hurt * 20) changes every 0.05 s, and % 2 alternates 0, 1, 0, 1...
+            // so the rat is skipped on every other twentieth of a second
             double hurt = enemy.getHurtFlashTime();
             if (hurt > 0 && (int) (hurt * 20) % 2 == 0) {
                 continue;   // blink after being hit
             }
+            // pick the frame from what the rat is doing
             int frame = switch (enemy.getState()) {
                 case WINDUP -> 2;
                 case BITE -> 3;
                 default -> enemy.isMoving() ? (int) ((now / RAT_STEP_NANOS) % 2) : 0;
             };
+            // squares -> pixels
             double px = enemy.getX() * TILE_SIZE;
             double py = enemy.getY() * TILE_SIZE;
 
+            // save() remembers the pen's settings so the flip can be undone by restore()
             gc.save();
             if (enemy.isFacingLeft()) {
                 // mirror the image: move to the right edge, then flip the x axis
@@ -168,6 +188,7 @@ public class GameRenderer {
             gc.drawImage(ratSheet, frame * frameSize, 0, frameSize, frameSize, 0, 0, TILE_SIZE, TILE_SIZE);
             gc.restore();
 
+            // a red "!" above a rat that is about to bite
             if (enemy.getState() == Enemy.State.WINDUP) {
                 gc.setFill(Color.rgb(255, 80, 60));
                 gc.setFont(Font.font(16));
@@ -175,8 +196,9 @@ public class GameRenderer {
                 gc.fillText("!", px + TILE_SIZE / 2.0, py + 8);
                 gc.setTextAlign(TextAlignment.LEFT);
             }
+            // health bar, only once the rat has been hurt: a dark background, then red for the HP left
             if (enemy.getHp() < enemy.getMaxHp()) {
-                double fraction = (double) enemy.getHp() / enemy.getMaxHp();
+                double fraction = (double) enemy.getHp() / enemy.getMaxHp();   // (double) avoids whole-number division
                 gc.setFill(Color.rgb(40, 10, 10));
                 gc.fillRect(px + 6, py + 6, TILE_SIZE - 12, 3);
                 gc.setFill(Color.rgb(220, 60, 50));
@@ -185,17 +207,20 @@ public class GameRenderer {
         }
     }
 
+    /** Draws the sword arc, fading out over the swing's 0.15 seconds. */
     private void drawSwing(GraphicsContext gc, GameState state) {
         MeleeSwing swing = state.getSwing();
         if (swing == null) {
             return;
         }
+        // global alpha = transparency for everything drawn next (1 = solid, 0 = invisible)
         gc.setGlobalAlpha(swing.getProgressLeft());
         drawRotatedAt(gc, swingImage, swing.getCentreX() * TILE_SIZE, swing.getCentreY() * TILE_SIZE,
                 swing.getAngleDegrees());
         gc.setGlobalAlpha(1.0);
     }
 
+    /** Draws every arrow in flight, turned to point the way it is flying. */
     private void drawArrows(GraphicsContext gc, GameState state) {
         for (Arrow arrow : state.getArrows()) {
             // the arrow flies at its exact angle, but the picture snaps to 16 angles so the pixels stay crisp
@@ -218,7 +243,7 @@ public class GameRenderer {
 
         gc.setStroke(Color.rgb(255, 255, 255, bowReady ? 0.45 : 0.15));
         gc.setLineWidth(1.5);
-        gc.setLineDashes(4, 6);
+        gc.setLineDashes(4, 6);   // 4 pixels of line, 6 pixels of gap; setLineDashes() with nothing turns it off
         gc.strokeLine(fromX, fromY, toX, toY);
         gc.setLineDashes();
         // small crosshair at the cursor
@@ -227,6 +252,7 @@ public class GameRenderer {
         gc.setLineWidth(1.0);
     }
 
+    /** Draws the floating damage numbers: red when the player is hit, yellow when an enemy is. */
     private void drawPopups(GraphicsContext gc, GameState state) {
         gc.setFont(Font.font(14));
         gc.setTextAlign(TextAlignment.CENTER);
@@ -261,6 +287,7 @@ public class GameRenderer {
         }
     }
 
+    /** Draws the edge of a hitbox, converting its squares into pixels. */
     private void outline(GraphicsContext gc, Hitbox box) {
         gc.strokeRect(box.getX() * TILE_SIZE, box.getY() * TILE_SIZE,
                 box.getWidth() * TILE_SIZE, box.getHeight() * TILE_SIZE);
@@ -268,18 +295,22 @@ public class GameRenderer {
 
     /** Draws a square image that faces right, centred on (centreX, centreY) and turned by angle degrees. */
     private void drawRotatedAt(GraphicsContext gc, Image image, double centreX, double centreY, double angle) {
-        gc.save();
-        gc.translate(centreX, centreY);
-        gc.rotate(angle);
-        gc.drawImage(image, -TILE_SIZE / 2.0, -TILE_SIZE / 2.0);
-        gc.restore();
+        gc.save();                        // remember the pen's position and angle
+        gc.translate(centreX, centreY);   // move the pen's origin (0, 0) to the image's centre
+        gc.rotate(angle);                 // turn the pen around that point
+        gc.drawImage(image, -TILE_SIZE / 2.0, -TILE_SIZE / 2.0);   // draw centred on the new origin
+        gc.restore();                     // put the pen back so later drawing isn't rotated
     }
 
+    /**
+     * Draws every square of the map. A nested loop visits each square, works out its
+     * position in pixels (column x 32, row x 32) and draws the right image for its tile number.
+     */
     private void drawMap(GraphicsContext gc, GameMap map, long now) {
         for (int row = 0; row < map.getRows(); row++) {
             for (int col = 0; col < map.getCols(); col++) {
-                double x = col * TILE_SIZE;
-                double y = row * TILE_SIZE;
+                double x = col * TILE_SIZE;   // left edge of this square, in pixels
+                double y = row * TILE_SIZE;   // top edge of this square, in pixels
                 int tile = map.getTile(row, col);
 
                 if (Tile.isWall(tile)) {
@@ -320,6 +351,7 @@ public class GameRenderer {
             return;
         }
 
+        // not a face: dark rock, with a 3-pixel lit rim along each side that touches open floor
         gc.drawImage(wallRockImage, x, y);
         gc.setFill(WALL_RIM);
         int rim = 3;
@@ -343,6 +375,9 @@ public class GameRenderer {
 
     /** Picks plain, cracked or mossy bricks. The same square always gets the same choice. */
     private Image wallFaceFor(int row, int col) {
+        // mix the row and column into one number (a "hash"), then keep 0-9 of it with floorMod.
+        // No randomness, so a wall never changes look between frames:
+        // 0-5 plain (60%), 6-7 cracked (20%), 8-9 mossy (20%)
         int hash = Math.floorMod((row * 73856093) ^ (col * 19349663), 10);
         if (hash < 6) {
             return wallFaceImage;
@@ -367,9 +402,13 @@ public class GameRenderer {
                 if (map.getTile(row, col) != Tile.WALL_TORCH || !isOpen(map, row + 1, col)) {
                     continue;
                 }
+                // brightness gently wobbles between 0.17 and 0.23 using a sine wave over time;
+                // + col * 1.7 starts each torch at a different point in the wave
                 double flicker = 0.20 + 0.03 * Math.sin(now / 90_000_000.0 + col * 1.7);
+                // centre of the glow: the middle of the floor square just below the torch
                 double cx = col * TILE_SIZE + TILE_SIZE / 2.0;
                 double cy = (row + 1) * TILE_SIZE + 8;
+                // a radial gradient fades from warm orange in the middle to fully see-through at the edge
                 gc.setFill(new RadialGradient(0, 0, cx, cy, radius, false, CycleMethod.NO_CYCLE,
                         new Stop(0, Color.rgb(255, 160, 70, flicker)),
                         new Stop(1, Color.rgb(255, 160, 70, 0))));
@@ -392,10 +431,14 @@ public class GameRenderer {
                 if (map.getTile(row, col) != Tile.CHEST) {
                     continue;
                 }
+                // a unique number for this square (like a seat number: row x width + column)
                 int key = row * map.getCols() + col;
+                // near = within 1 square across AND within 1 square up/down (so diagonals count)
                 boolean playerNear = Math.abs(row - player.getRow()) <= CHEST_OPEN_DISTANCE
                         && Math.abs(col - player.getCol()) <= CHEST_OPEN_DISTANCE;
 
+                // look up how open this chest was last frame (0.0 if we've never seen it),
+                // then open it a little more or close it a little more
                 double openness = chestOpenness.getOrDefault(key, 0.0);
                 if (playerNear) {
                     openness = Math.min(CHEST_OPEN_FRAME, openness + frameChange);
@@ -418,6 +461,7 @@ public class GameRenderer {
         }
     }
 
+    /** Draws each dart shooter, glowing if it is about to fire, turned to face the way it shoots. */
     private void drawTraps(GraphicsContext gc, GameState state) {
         for (DartTrap trap : state.getTraps()) {
             Image image = trap.isWarning() ? dartTrapWarningImage : dartTrapImage;
@@ -425,6 +469,7 @@ public class GameRenderer {
         }
     }
 
+    /** Draws every dart in flight. */
     private void drawDarts(GraphicsContext gc, GameState state) {
         for (Dart dart : state.getDarts()) {
             // dart x/y are measured in squares from its centre; convert to the top-left pixel of a square-sized image
@@ -449,12 +494,14 @@ public class GameRenderer {
         gc.restore();
     }
 
+    /** Draws the player at their exact (sliding) position, with the walk cycle while moving. */
     private void drawPlayer(GraphicsContext gc, GameState state, long now) {
         Player player = state.getPlayer();
         double drawX = player.getX() * TILE_SIZE;   // the model glides x/y between squares
         double drawY = player.getY() * TILE_SIZE;
 
         // walking: cycle through the frames over time; standing still: frame 0
+        // now / FRAME_TIME_NANOS counts up by 1 every frame-time; % WALK_FRAMES wraps it to 0, 1, 2, 3, 0, 1...
         int frame = player.isMoving() ? (int) ((now / FRAME_TIME_NANOS) % WALK_FRAMES) : 0;
         int row = playerSheetRows >= 4 ? rowFor(player.getFacing()) : 0;
 
@@ -480,13 +527,15 @@ public class GameRenderer {
         };
     }
 
+    /** The bar under the map: health, gold, keys, weapon status and the latest message. */
     private void drawHud(GraphicsContext gc, GameState state, double top, double width) {
         Player player = state.getPlayer();
 
+        // dark background strip
         gc.setFill(Color.rgb(25, 25, 30));
         gc.fillRect(0, top, width, HUD_HEIGHT);
 
-        // health bar
+        // health bar: a dark red full-width bar, then a bright red bar as wide as the HP left
         double barWidth = 160;
         double hpFraction = (double) player.getHp() / player.getMaxHp();
         gc.setFill(Color.rgb(80, 20, 20));
@@ -494,6 +543,7 @@ public class GameRenderer {
         gc.setFill(Color.rgb(200, 50, 50));
         gc.fillRect(12, top + 12, barWidth * hpFraction, 14);
 
+        // numbers next to the bar
         gc.setFill(Color.WHITE);
         gc.setFont(Font.font(14));
         gc.fillText("HP " + player.getHp() + "/" + player.getMaxHp(), 180, top + 24);
@@ -507,17 +557,19 @@ public class GameRenderer {
         drawWeaponStatus(gc, "[F] Bow", state.getArrowCooldown(), 600, top + 24);
         gc.setFill(Color.rgb(120, 120, 130));
         gc.fillText("F3: hitboxes", width - 100, top + 24);
+        // second line: whatever just happened ("You open a chest...")
         gc.setFill(Color.LIGHTGRAY);
         gc.fillText(state.getMessage(), 12, top + 48);
     }
 
+    /** One weapon's label: bright blue when ready, grey with the seconds left while cooling down. */
     private void drawWeaponStatus(GraphicsContext gc, String label, double cooldown, double x, double y) {
         if (cooldown <= 0) {
             gc.setFill(Color.rgb(140, 220, 255));
             gc.fillText(label, x, y);
         } else {
             gc.setFill(Color.rgb(110, 110, 120));
-            gc.fillText(label + String.format(" %.1fs", cooldown), x, y);
+            gc.fillText(label + String.format(" %.1fs", cooldown), x, y);   // %.1f = one decimal place, e.g. 0.3s
         }
     }
 }

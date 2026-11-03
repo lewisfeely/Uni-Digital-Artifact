@@ -6,8 +6,14 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * Everything about the game right now: the map, the player, enemies, traps, darts, arrows
- * and the last message. This class knows nothing about JavaFX - the view just reads from it
+ * Everything about the game right now: every level, which level you're on, the player,
+ * arrows, the sword swing and the last message.
+ *
+ * The levels are kept in an array (Level[]) and currentLevel is the index of the one you're
+ * on. getMap(), getEnemies(), getTraps() and getDarts() always answer for the current level,
+ * so the rest of the code (and GameRenderer) doesn't need to know there is more than one.
+ *
+ * This class knows nothing about JavaFX - the view just reads from it
  * and draws. Keeping it that way means you can unit test all the rules without a window.
  *
  * Changes happen in two ways:
@@ -16,8 +22,9 @@ import java.util.Random;
  *    sliding movement all run on their own clocks (real-time)
  */
 public class GameState {
+    // ---- rewards and trap damage ----
     private static final int CHEST_GOLD = 10;
-    public static final int DART_DAMAGE = 30;
+    public static final int DART_DAMAGE = 30;   // 30 = a dart knocks the player out in one hit
 
     // ---- player combat settings ----
     public static final double PLAYER_SLIDE_SPEED = 5.0;     // squares per second
@@ -31,45 +38,63 @@ public class GameState {
     /** Arrows check for hits every quarter square so they can't skip through a wall or a rat. */
     private static final double ARROW_STEP = 0.25;
 
-    private final GameMap map;
-    private final Player player;
-    private final List<DartTrap> traps;
-    private final List<Enemy> enemies;
-    private final List<Dart> darts = new ArrayList<>();
+    // ---- the world: every level, and which one the player is on ----
+    private final Level[] levels;     // levels[0] is level 1, levels[1] is level 2...
+    private int currentLevel = 0;     // index into levels: the floor the player is on now
+    private final Player player;      // the player travels between levels, so lives here
+
+    // ---- things that come and go while playing (ArrayLists grow and shrink as needed) ----
     private final List<Arrow> arrows = new ArrayList<>();
     private final List<DamagePopup> popups = new ArrayList<>();
     private MeleeSwing swing = null;   // null when not swinging
-    private String message = "Arrows/WASD to move, Space to swing, F to shoot at the cursor.";
+    private String message = "Arrows/WASD to move, Space to swing, F to shoot at the cursor.";   // shown in the bottom bar
 
-    // where the player comes back after collapsing - starts as the level's start square
-    private int checkpointRow;
-    private int checkpointCol;
-    private double invincibleTime = 0;
-    private double swingCooldown = 0;
-    private double arrowCooldown = 0;
+    // ---- timers, in seconds, counted down in update() ----
+    private double invincibleTime = 0;   // > 0 means the player can't be hurt
+    private double swingCooldown = 0;    // > 0 means the sword isn't ready yet
+    private double arrowCooldown = 0;    // > 0 means the bow isn't ready yet
 
     // where the mouse is pointing, in squares (set by App when the mouse moves)
     private boolean hasAim = false;
     private double aimX;
     private double aimY;
 
+    /** Used for every damage roll. Tests swap it for one with a fixed seed. */
     private Random random = new Random();
 
+    // ---- constructors: the shorter ones build a single Level and call the main one with this(...) ----
+
+    /** A level with no traps or enemies (used by simple tests). */
     public GameState(GameMap map, Player player) {
         this(map, player, new ArrayList<>(), new ArrayList<>());
     }
 
+    /** A level with traps but no enemies. */
     public GameState(GameMap map, Player player, List<DartTrap> traps) {
         this(map, player, traps, new ArrayList<>());
     }
 
+    /** A single level built from its parts (wraps them in a Level, then uses the main constructor). */
     public GameState(GameMap map, Player player, List<DartTrap> traps, List<Enemy> enemies) {
-        this.map = map;
+        this(new Level[] {new Level(map, traps, enemies, player.getRow(), player.getCol())}, player);
+    }
+
+    /**
+     * The main constructor: LevelLoader uses this one.
+     * @param levels every level in the game, in order (must have at least one)
+     * @param player the player, who starts on levels[0]
+     */
+    public GameState(Level[] levels, Player player) {
+        if (levels.length == 0) {
+            throw new IllegalArgumentException("The game needs at least one level");
+        }
+        this.levels = levels;
         this.player = player;
-        this.traps = traps;
-        this.enemies = enemies;
-        this.checkpointRow = player.getRow();
-        this.checkpointCol = player.getCol();
+    }
+
+    /** The level the player is on right now. Every "map", "enemies" etc. in the rules comes from here. */
+    private Level level() {
+        return levels[currentLevel];
     }
 
     // ------------------------------------------------------------------ movement
@@ -81,40 +106,58 @@ public class GameState {
      * @return true if the player actually moved
      */
     public boolean movePlayer(Direction direction) {
+        // 1. work out the square the player is trying to step onto
         player.setFacing(direction);   // turn even if something blocks the way
         int newRow = player.getRow() + direction.getRowChange();
         int newCol = player.getCol() + direction.getColChange();
 
-        if (map.isInBounds(newRow, newCol) && map.getTile(newRow, newCol) == Tile.DOOR) {
+        // 2. a locked door: try to unlock it instead of moving
+        if (getMap().isInBounds(newRow, newCol) && getMap().getTile(newRow, newCol) == Tile.DOOR) {
             tryUnlockDoor(newRow, newCol);
             return false;   // unlocking takes your turn; walk through on the next one
         }
 
+        // 3. an enemy is standing there: blocked
         Enemy blocker = enemyAt(newRow, newCol);
         if (blocker != null) {
             message = "A " + blocker.getName() + " is in the way. Space to swing!";
             return false;
         }
 
-        if (!map.isWalkable(newRow, newCol)) {
+        // 4. a wall (or the edge of the map): blocked
+        if (!getMap().isWalkable(newRow, newCol)) {
             message = "A wall blocks your way.";
             return false;
         }
 
+        // 5. the way is clear: move, then react to whatever is on the new square
         player.moveTo(newRow, newCol);
-        int tile = map.getTile(newRow, newCol);
+        int tile = getMap().getTile(newRow, newCol);
 
         if (tile == Tile.CHEST) {
             player.addGold(CHEST_GOLD);
-            map.setTile(newRow, newCol, Tile.FLOOR);
+            getMap().setTile(newRow, newCol, Tile.FLOOR);
             message = "You open a chest and find " + CHEST_GOLD + " gold!";
         } else if (tile == Tile.KEY) {
             player.addKey();
-            map.setTile(newRow, newCol, Tile.FLOOR);
+            getMap().setTile(newRow, newCol, Tile.FLOOR);
             message = "You pick up a Rusty Key.";
+        } else if (tile == Tile.STAIRS_UP) {
+            // '+' stairs: on to the next level
+            if (changeLevel(currentLevel + 1)) {
+                message = "You move up to level " + (currentLevel + 1) + ".";
+            } else {
+                message = "These stairs don't lead anywhere yet.";
+            }
+        } else if (tile == Tile.STAIRS_DOWN) {
+            // '-' stairs: back to the previous level
+            if (changeLevel(currentLevel - 1)) {
+                message = "You move back to level " + (currentLevel + 1) + ".";
+            } else {
+                message = "These stairs don't lead anywhere yet.";
+            }
         } else if (tile == Tile.CHECKPOINT) {
-            checkpointRow = newRow;
-            checkpointCol = newCol;
+            level().setCheckpoint(newRow, newCol);   // remembered by this level only
             message = "";
         } else {
             message = "";
@@ -122,9 +165,46 @@ public class GameState {
         return true;
     }
 
+    /**
+     * Moves the player to another level and puts them on that level's matching stairs.
+     * Package-private (no "private") so tests in the same package can call it.
+     * @param levelTo which level to go to (0 = level 1, 1 = level 2...)
+     * @return true if the level changed, false if there is no level with that number
+     */
+    boolean changeLevel(int levelTo) {
+        // ---- stop if there is no such level (e.g. the stairs on the last level) ----
+        if (levelTo < 0 || levelTo >= levels.length) {
+            return false;
+        }
+        boolean goingForward = levelTo > currentLevel;
+
+        // ---- tidy up the level we're leaving (before switching, so getDarts() is the old level's) ----
+        getDarts().clear();   // darts still flying on the old level
+        arrows.clear();       // arrows in the air
+        popups.clear();       // damage numbers drifting up
+        swing = null;         // cancel any sword swing in progress
+
+        // ---- switch level: from here on, getMap() and level() mean the new level ----
+        currentLevel = levelTo;
+
+        // ---- arrive on the stairs that lead back the way you came ----
+        // going forward you arrive on the new level's '-' (the way back);
+        // going back you arrive on the old level's '+' (the way you left it)
+        int arriveOn = goingForward ? Tile.STAIRS_DOWN : Tile.STAIRS_UP;
+        int[] stairs = getMap().findTile(arriveOn);
+        if (stairs != null) {
+            player.placeAt(stairs[0], stairs[1]);   // placeAt jumps there with no slide
+        } else {
+            // a level with no matching stairs: use its checkpoint instead
+            player.placeAt(level().getCheckpointRow(), level().getCheckpointCol());
+        }
+        return true;
+    }
+
+    /** Opens the door if the player has a key (using it up), otherwise explains why it won't open. */
     private void tryUnlockDoor(int row, int col) {
         if (player.useKey()) {
-            map.setTile(row, col, Tile.OPEN_DOOR);
+            getMap().setTile(row, col, Tile.OPEN_DOOR);
             message = "You unlock the door with the Rusty Key.";
         } else {
             message = "The door is locked. Maybe there's a key nearby.";
@@ -146,19 +226,23 @@ public class GameState {
      */
     public boolean swing() {
         if (swingCooldown > 0) {
-            return false;
+            return false;   // still cooling down from the last swing
         }
         double[] dir = aimDirection();
-        // snap the angle to the nearest 45 degrees
+        // snap the angle to the nearest 45 degrees:
+        // atan2 turns the direction into an angle, dividing by 45 degrees (PI / 4) and rounding
+        // picks the nearest of the 8 directions, multiplying back gives that exact angle
         double angle = Math.atan2(dir[1], dir[0]);
         double snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+        // cos and sin turn the snapped angle back into a direction of length 1
         double dx = Math.cos(snapped);
         double dy = Math.sin(snapped);
 
+        // the hitbox sits 0.9 squares out from the player's centre, in the swing direction
         swing = new MeleeSwing(player.getCentreX() + dx * 0.9, player.getCentreY() + dy * 0.9,
                 Math.toDegrees(snapped));
-        swingCooldown = SWING_COOLDOWN;
-        faceTowards(dx, dy);
+        swingCooldown = SWING_COOLDOWN;   // start the cooldown
+        faceTowards(dx, dy);              // turn the sprite to face the swing
         return true;
     }
 
@@ -168,9 +252,10 @@ public class GameState {
      */
     public boolean shootArrow() {
         if (arrowCooldown > 0) {
-            return false;
+            return false;   // the bow isn't ready yet
         }
         double[] dir = aimDirection();
+        // start the arrow 0.4 squares out from the player's centre so it doesn't begin inside them
         arrows.add(new Arrow(player.getCentreX() + dir[0] * 0.4, player.getCentreY() + dir[1] * 0.4,
                 dir[0], dir[1]));
         arrowCooldown = ARROW_COOLDOWN;
@@ -183,20 +268,25 @@ public class GameState {
      * If the mouse hasn't been used (or is right on the player), use the way the player faces.
      */
     private double[] aimDirection() {
+        // the gap from the player to the cursor, on each axis
         double dx = 0;
         double dy = 0;
         if (hasAim) {
             dx = aimX - player.getCentreX();
             dy = aimY - player.getCentreY();
         }
+        // no usable aim (cursor never moved, or right on top of the player): use the facing direction
         if (dx * dx + dy * dy < 0.01) {
             dx = player.getFacing().getColChange();
             dy = player.getFacing().getRowChange();
         }
+        // divide by the length (Pythagoras) so the direction is exactly 1 long,
+        // whether the cursor is 2 squares away or 20
         double length = Math.sqrt(dx * dx + dy * dy);
         return new double[] {dx / length, dy / length};
     }
 
+    /** Turns the player to whichever of the 4 directions is closest to (dx, dy). */
     private void faceTowards(double dx, double dy) {
         if (Math.abs(dx) >= Math.abs(dy)) {
             player.setFacing(dx > 0 ? Direction.RIGHT : Direction.LEFT);
@@ -212,38 +302,44 @@ public class GameState {
      * @param deltaSeconds time since the last update (about 0.016 at 60 frames a second)
      */
     public void update(double deltaSeconds) {
+        // 1. slide the player and count down every timer (Math.max stops them going below 0)
         player.updateSlide(deltaSeconds, PLAYER_SLIDE_SPEED);
         invincibleTime = Math.max(0, invincibleTime - deltaSeconds);
         swingCooldown = Math.max(0, swingCooldown - deltaSeconds);
         arrowCooldown = Math.max(0, arrowCooldown - deltaSeconds);
 
+        // 2. traps fire and darts fly, then the player's attacks are checked against enemies
         updateTrapsAndDarts(deltaSeconds);
         updateSwing(deltaSeconds);
         updateArrows(deltaSeconds);
 
-        for (Enemy enemy : enemies) {
+        // 3. every enemy runs its state machine, then the dead ones are taken out of the list
+        //    (removeIf deletes every item the test is true for - safer than removing inside the loop)
+        for (Enemy enemy : getEnemies()) {
             enemy.update(deltaSeconds, this);
         }
-        enemies.removeIf(enemy -> !enemy.isAlive());
+        getEnemies().removeIf(enemy -> !enemy.isAlive());
 
+        // 4. damage numbers drift and fade, and finished ones are removed
         for (DamagePopup popup : popups) {
             popup.update(deltaSeconds);
         }
         popups.removeIf(DamagePopup::isFinished);
     }
 
+    /** Counts every trap down, adds a dart for each one that fires, then moves all the darts. */
     private void updateTrapsAndDarts(double deltaSeconds) {
-        for (DartTrap trap : traps) {
+        for (DartTrap trap : getTraps()) {
             if (trap.update(deltaSeconds)) {
                 Dart dart = trap.fire();
-                if (!map.blocksDarts(dart.getRow(), dart.getCol())) {
-                    darts.add(dart);
+                if (!getMap().blocksDarts(dart.getRow(), dart.getCol())) {
+                    getDarts().add(dart);
                 }
             }
         }
 
         // Use an Iterator so we can safely remove darts while looping over the list
-        Iterator<Dart> it = darts.iterator();
+        Iterator<Dart> it = getDarts().iterator();
         while (it.hasNext()) {
             Dart dart = it.next();
             if (moveDart(dart, deltaSeconds)) {
@@ -258,16 +354,18 @@ public class GameState {
      * @return true if the dart is finished (hit something) and should be removed
      */
     private boolean moveDart(Dart dart, double deltaSeconds) {
+        // remember where the dart started this frame, move it, then see how many squares it crossed
         int fromRow = dart.getRow();
         int fromCol = dart.getCol();
         dart.update(deltaSeconds);
         int squaresTravelled = Math.abs(dart.getRow() - fromRow) + Math.abs(dart.getCol() - fromCol);
 
+        // check every square along the way, starting with the one it began in (i = 0)
         Direction dir = dart.getDirection();
         for (int i = 0; i <= squaresTravelled; i++) {
             int row = fromRow + dir.getRowChange() * i;
             int col = fromCol + dir.getColChange() * i;
-            if (map.blocksDarts(row, col)) {
+            if (getMap().blocksDarts(row, col)) {
                 return true;
             }
             if (row == player.getRow() && col == player.getCol()) {
@@ -281,14 +379,16 @@ public class GameState {
     /** The sword's hitbox damages every enemy it touches - each one only once per swing. */
     private void updateSwing(double deltaSeconds) {
         if (swing == null) {
-            return;
+            return;   // not swinging right now
         }
-        for (Enemy enemy : enemies) {
+        // damage every living enemy the hitbox touches that this swing hasn't already hit
+        for (Enemy enemy : getEnemies()) {
             if (enemy.isAlive() && !swing.hasHit(enemy) && swing.getHitbox().intersects(enemy.getHurtbox())) {
                 swing.markHit(enemy);
                 damageEnemy(enemy, Combat.rollDamage(SWING_MIN_DAMAGE, SWING_MAX_DAMAGE, random));
             }
         }
+        // count the swing down; once it ends there is no swing (null) until the next key press
         swing.update(deltaSeconds);
         if (swing.isFinished()) {
             swing = null;
@@ -297,17 +397,21 @@ public class GameState {
 
     /** Moves each arrow in small steps; it stops at walls and damages the first enemy it touches. */
     private void updateArrows(double deltaSeconds) {
+        // an Iterator lets us remove finished arrows safely while looping over the list
         Iterator<Arrow> it = arrows.iterator();
         while (it.hasNext()) {
             Arrow arrow = it.next();
+            // split this frame's movement into small steps (at most ARROW_STEP squares each),
+            // e.g. 0.1 s at 10 squares/s = 1 square = 4 steps of a quarter square
             int steps = Math.max(1, (int) Math.ceil(Arrow.SPEED * deltaSeconds / ARROW_STEP));
             boolean finished = false;
             for (int i = 0; i < steps && !finished; i++) {
                 arrow.update(deltaSeconds / steps);
-                if (map.blocksDarts(arrow.getRow(), arrow.getCol())) {
-                    finished = true;
+                if (getMap().blocksDarts(arrow.getRow(), arrow.getCol())) {
+                    finished = true;   // hit a wall or locked door
                 } else {
-                    for (Enemy enemy : enemies) {
+                    // did the tip land inside any enemy's hurtbox? Only the first one is hit.
+                    for (Enemy enemy : getEnemies()) {
                         if (enemy.isAlive() && enemy.getHurtbox().contains(arrow.getX(), arrow.getY())) {
                             damageEnemy(enemy, Combat.rollDamage(ARROW_MIN_DAMAGE, ARROW_MAX_DAMAGE, random));
                             finished = true;
@@ -322,6 +426,10 @@ public class GameState {
         }
     }
 
+    /**
+     * Hurts an enemy: lowers its HP, makes it blink, shows the damage number and updates the message.
+     * A dead enemy pays out its gold here; it is removed from the list at the end of update().
+     */
     private void damageEnemy(Enemy enemy, int damage) {
         enemy.takeDamage(damage);
         enemy.flashHurt();
@@ -340,15 +448,16 @@ public class GameState {
      */
     void damagePlayer(int amount, String whatHappened) {
         if (invincibleTime > 0) {
-            return;
+            return;   // hit very recently: ignore this one
         }
         player.takeDamage(amount);
-        invincibleTime = INVINCIBLE_SECONDS;
+        invincibleTime = INVINCIBLE_SECONDS;   // start the invincibility (the renderer blinks the player)
         popups.add(new DamagePopup(player.getCentreX(), player.getY(), "-" + amount, true));
         if (player.isAlive()) {
             message = whatHappened + "! (-" + amount + " HP)";
         } else {
-            player.placeAt(checkpointRow, checkpointCol);
+            // out of HP: jump back to the last checkpoint with full health
+            player.placeAt(level().getCheckpointRow(), level().getCheckpointCol());
             player.heal(player.getMaxHp());
             message = "You collapse... and wake up back at the checkpoint.";
         }
@@ -356,9 +465,9 @@ public class GameState {
 
     // ------------------------------------------------------------------ helpers for enemies
 
-    /** The living enemy standing on this square, or null. */
+    /** The living enemy standing on this square, or null. A linear search through the enemy list. */
     public Enemy enemyAt(int row, int col) {
-        for (Enemy enemy : enemies) {
+        for (Enemy enemy : getEnemies()) {
             if (enemy.isAlive() && enemy.getRow() == row && enemy.getCol() == col) {
                 return enemy;
             }
@@ -369,13 +478,14 @@ public class GameState {
     /** An enemy may step here if it's walkable and nobody (player or enemy) is on it. */
     boolean isFreeForEnemy(int row, int col) {
         boolean playerThere = player.getRow() == row && player.getCol() == col;
-        return map.isWalkable(row, col) && !playerThere && enemyAt(row, col) == null;
+        return getMap().isWalkable(row, col) && !playerThere && enemyAt(row, col) == null;
     }
 
     // ------------------------------------------------------------------ getters
 
+    /** The map of the level the player is on. */
     public GameMap getMap() {
-        return map;
+        return level().getMap();
     }
 
     public Player getPlayer() {
@@ -386,16 +496,34 @@ public class GameState {
         return message;
     }
 
+    /** The traps on the current level. */
     public List<DartTrap> getTraps() {
-        return traps;
+        return level().getTraps();
     }
 
+    /** The darts flying on the current level. */
     public List<Dart> getDarts() {
-        return darts;
+        return level().getDarts();
     }
 
+    /** The enemies on the current level. */
     public List<Enemy> getEnemies() {
-        return enemies;
+        return level().getEnemies();
+    }
+
+    /** Which level the player is on: 0 for level 1, 1 for level 2... */
+    public int getCurrentLevelIndex() {
+        return currentLevel;
+    }
+
+    /** One level from the array, by index (0 = level 1). */
+    public Level getLevel(int index) {
+        return levels[index];
+    }
+
+    /** How many levels the game has (the length of the levels array). */
+    public int getLevelCount() {
+        return levels.length;
     }
 
     public List<Arrow> getArrows() {
