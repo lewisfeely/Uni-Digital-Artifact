@@ -66,7 +66,13 @@ public class GameRenderer {
     private final Image playerSheet = loadImage("player.png");
     private final Image dartTrapImage = loadImage("dart_trap.png");          // drawn firing right
     private final Image dartTrapWarningImage = loadImage("dart_trap_warning.png");
-    private final Image dartImage = loadImage("dart.png");                  // drawn pointing right
+    private final Image dartImage = loadImage("dart.png");
+    // orc_hammer_swing.png: five 48x48 frames, the orc drawn 8px in and 14px down in each
+    private final Image orcHammerSwingImage = loadImage("orc_hammer_swing.png");
+    private static final int ORC_FRAME_SIZE = 48;
+    // orc_walk.png: four 48x48 frames (left foot up, down, right foot up, down), lined up like the swing sheet
+    private final Image orcWalkImage = loadImage("orc_walk.png");
+    private static final long ORC_STEP_NANOS = 150_000_000L;   // next walk frame every 0.15 s
 
     // ---- dungeon walls ----
     private final Image wallFaceImage = loadImage("wall_face.png");
@@ -156,55 +162,114 @@ public class GameRenderer {
 
     // ------------------------------------------------------------------ combat drawing
 
-    /** Draws every rat with the right animation frame, facing the right way, plus its warning and health bar. */
+    /**
+     * Draws every enemy (rats and orcs) with the right animation frame, facing the right way,
+     * plus its warning "!" and health bar.
+     */
     private void drawEnemies(GraphicsContext gc, GameState state, long now) {
-        int frameSize = (int) ratSheet.getHeight();   // frames are square, so height = frame size
         for (Enemy enemy : state.getEnemies()) {
             // blinking: (hurt * 20) changes every 0.05 s, and % 2 alternates 0, 1, 0, 1...
-            // so the rat is skipped on every other twentieth of a second
+            // so the enemy is skipped on every other twentieth of a second
             double hurt = enemy.getHurtFlashTime();
             if (hurt > 0 && (int) (hurt * 20) % 2 == 0) {
                 continue;   // blink after being hit
             }
-            // pick the frame from what the rat is doing
-            int frame = switch (enemy.getState()) {
-                case WINDUP -> 2;
-                case BITE -> 3;
-                default -> enemy.isMoving() ? (int) ((now / RAT_STEP_NANOS) % 2) : 0;
-            };
+
             // squares -> pixels
             double px = enemy.getX() * TILE_SIZE;
             double py = enemy.getY() * TILE_SIZE;
 
-            // save() remembers the pen's settings so the flip can be undone by restore()
-            gc.save();
-            if (enemy.isFacingLeft()) {
-                // mirror the image: move to the right edge, then flip the x axis
-                gc.translate(px + TILE_SIZE, py);
-                gc.scale(-1, 1);
+            // ---- the sprite: each type has its own sheet ----
+            boolean isOrc = enemy.getType() == Enemy.Type.ORC;
+            if (isOrc) {
+                drawOrc(gc, enemy, px, py, now);
             } else {
-                gc.translate(px, py);
+                drawRat(gc, enemy, px, py, now);
             }
-            gc.drawImage(ratSheet, frame * frameSize, 0, frameSize, frameSize, 0, 0, TILE_SIZE, TILE_SIZE);
-            gc.restore();
 
-            // a red "!" above a rat that is about to bite
+            // ---- shared by every enemy type ----
+            // the orc's art reaches above his square, so his "!" and health bar sit higher
+            double topY = isOrc ? py - 8 : py + 6;
+
+            // a red "!" above an enemy that is about to attack
             if (enemy.getState() == Enemy.State.WINDUP) {
                 gc.setFill(Color.rgb(255, 80, 60));
                 gc.setFont(Font.font(16));
                 gc.setTextAlign(TextAlignment.CENTER);
-                gc.fillText("!", px + TILE_SIZE / 2.0, py + 8);
+                gc.fillText("!", px + TILE_SIZE / 2.0, topY + 2);
                 gc.setTextAlign(TextAlignment.LEFT);
             }
-            // health bar, only once the rat has been hurt: a dark background, then red for the HP left
+            // health bar, only once the enemy has been hurt: a dark background, then red for the HP left
             if (enemy.getHp() < enemy.getMaxHp()) {
                 double fraction = (double) enemy.getHp() / enemy.getMaxHp();   // (double) avoids whole-number division
                 gc.setFill(Color.rgb(40, 10, 10));
-                gc.fillRect(px + 6, py + 6, TILE_SIZE - 12, 3);
+                gc.fillRect(px + 6, topY, TILE_SIZE - 12, 3);
                 gc.setFill(Color.rgb(220, 60, 50));
-                gc.fillRect(px + 6, py + 6, (TILE_SIZE - 12) * fraction, 3);
+                gc.fillRect(px + 6, topY, (TILE_SIZE - 12) * fraction, 3);
             }
         }
+    }
+
+    /** Draws one rat: scurry frames while moving, then wind-up and bite frames, flipped to face its way. */
+    private void drawRat(GraphicsContext gc, Enemy enemy, double px, double py, long now) {
+        int frameSize = (int) ratSheet.getHeight();   // frames are square, so height = frame size
+        // pick the frame from what the rat is doing
+        int frame = switch (enemy.getState()) {
+            case WINDUP -> 2;
+            case BITE -> 3;
+            default -> enemy.isMoving() ? (int) ((now / RAT_STEP_NANOS) % 2) : 0;
+        };
+        // save() remembers the pen's settings so the flip can be undone by restore()
+        gc.save();
+        if (enemy.isFacingLeft()) {
+            // mirror the image: move to the right edge, then flip the x axis
+            gc.translate(px + TILE_SIZE, py);
+            gc.scale(-1, 1);
+        } else {
+            gc.translate(px, py);
+        }
+        gc.drawImage(ratSheet, frame * frameSize, 0, frameSize, frameSize, 0, 0, TILE_SIZE, TILE_SIZE);
+        gc.restore();
+    }
+
+    /**
+     * Draws one orc. While chasing he waddles using orc_walk.png (4 frames); otherwise he uses
+     * orc_hammer_swing.png (0 ready, 1 wind-up, 2 hammer over the head, 3 smash, 4 follow-through).
+     * Both sheets have 48x48 frames with the orc 8px in and 14px down.
+     */
+    private void drawOrc(GraphicsContext gc, Enemy enemy, double px, double py, long now) {
+        // ---- pick the sheet: walking while he chases you, the hammer swing the rest of the time ----
+        // (the whole of CHASE, not just while sliding, so he keeps waddling between steps)
+        boolean walking = enemy.getState() == Enemy.State.CHASE;
+        Image sheet = walking ? orcWalkImage : orcHammerSwingImage;
+
+        // ---- pick the frame from that sheet ----
+        int frame;
+        if (walking) {
+            // now is in nanoseconds; dividing by the frame time counts up 0, 1, 2, 3, 4...
+            // and % 4 wraps it round to 0, 1, 2, 3, 0, 1...
+            frame = (int) ((now / ORC_STEP_NANOS) % 4);
+        } else {
+            frame = switch (enemy.getState()) {
+                // the timer counts down, so "more than half left" = the first half of the warning
+                case WINDUP -> enemy.getStateTimer() > enemy.getWindupTime() / 2 ? 1 : 2;
+                case BITE -> 3;                       // the smash
+                case COOLDOWN -> 4;                   // follow-through
+                default -> 0;                         // standing still (IDLE): your original drawing
+            };
+        }
+        gc.save();
+        // the art smashes to the left of the picture, so flip it when he faces right
+        if (!enemy.isFacingLeft()) {
+            gc.translate(px + TILE_SIZE, py);
+            gc.scale(-1, 1);
+        } else {
+            gc.translate(px, py);
+        }
+        // frames are 48x48 with the orc 8px in and 14px down, so step back by that much
+        gc.drawImage(sheet, frame * ORC_FRAME_SIZE, 0, ORC_FRAME_SIZE, ORC_FRAME_SIZE,
+                -8, -14, ORC_FRAME_SIZE, ORC_FRAME_SIZE);
+        gc.restore();
     }
 
     /** Draws the sword arc, fading out over the swing's 0.15 seconds. */

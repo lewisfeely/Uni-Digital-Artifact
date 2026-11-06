@@ -6,10 +6,13 @@ package com.lewis.rpg.model;
  * runs the code for that state, which may move it to another state.
  *
  *   IDLE     -> waits until the player comes within sight
- *   CHASE    -> steps one square towards the player every STEP_INTERVAL seconds
- *   WINDUP   -> next to the player: stops and flashes (the player's warning)
- *   BITE     -> a bite hitbox appears in the square it faces, for BITE_TIME seconds
- *   COOLDOWN -> rests, then goes back to CHASE
+ *   CHASE    -> steps one square towards the player every stepInterval seconds
+ *   WINDUP   -> next to the player: stops for windupTime seconds (the player's warning)
+ *   BITE     -> an attack hitbox appears in the square it faces, for BITE_TIME seconds
+ *   COOLDOWN -> rests for cooldownTime seconds, then goes back to CHASE
+ *
+ * Every enemy runs the same state machine; a rat and an orc only differ in their numbers
+ * (health, damage, timings...), which are set by the factory methods rat() and orc().
  *
  * Extends Entity, so it already has health, position, sliding and a hurtbox.
  */
@@ -18,11 +21,11 @@ public class Enemy extends Entity {
     /** The states the enemy can be in. */
     public enum State { IDLE, CHASE, WINDUP, BITE, COOLDOWN }
 
-    // ---- timings, in seconds (shared by every enemy) ----
-    public static final double STEP_INTERVAL = 0.35;   // time between steps while chasing
-    public static final double WINDUP_TIME = 0.4;      // warning before a bite
-    public static final double BITE_TIME = 0.15;       // how long the bite hitbox exists
-    public static final double COOLDOWN_TIME = 0.6;    // rest after a bite
+    /** The kinds of enemy - the renderer uses this to pick the sprite sheet. */
+    public enum Type { RAT, ORC }
+
+    // ---- timings, in seconds, shared by every enemy (the rest are per enemy, below) ----
+    public static final double BITE_TIME = 0.15;       // how long the attack hitbox exists
     /** How fast it glides between squares, in squares per second. */
     public static final double SLIDE_SPEED = 4.0;
     /** How long it blinks after being hit. */
@@ -33,6 +36,11 @@ public class Enemy extends Entity {
     private final int maxDamage;
     private final int sightRange;   // in squares, counted up/down + left/right
     private final int goldDrop;     // given to the player when it dies
+    private final Type type;             // rat or orc
+    private final double stepInterval;   // time between steps while chasing, in seconds
+    private final double windupTime;     // warning before an attack, in seconds
+    private final double cooldownTime;   // rest after an attack, in seconds
+    private final String attackVerb;     // "bites" or "smashes", for the message
 
     // ---- what it is doing right now ----
     private State state = State.IDLE;
@@ -42,22 +50,51 @@ public class Enemy extends Entity {
     private boolean biteLanded = false;          // so one bite can only hurt once
     private double hurtFlashTime = 0;            // blink after being hit
 
-    public Enemy(String name, int maxHp, int row, int col,
+    public Enemy(Type type, double windupTime, double stepInterval, double cooldownTime, String attackVerb,
+                 String name, int maxHp, int row, int col,
                  int minDamage, int maxDamage, int sightRange, int goldDrop) {
         super(name, maxHp, row, col);   // Entity handles name, health and position
         this.minDamage = minDamage;
         this.maxDamage = maxDamage;
         this.sightRange = sightRange;
         this.goldDrop = goldDrop;
+        this.attackVerb = attackVerb;
+        this.type = type;
+        this.windupTime = windupTime;
+        this.stepInterval = stepInterval;
+        this.cooldownTime = cooldownTime;
     }
 
     /**
      * The rat: weak, quick to anger, worth a little gold.
      * A "factory method" - a named shortcut so LevelLoader can write Enemy.rat(row, col)
-     * instead of remembering the order of eight numbers.
+     * instead of remembering the order of all the numbers.
      */
     public static Enemy rat(int row, int col) {
-        return new Enemy("Rat", 6, row, col, 1, 3, 7, 5);
+        return new Enemy(Type.RAT,
+                0.4,         // windup: warning before a bite
+                0.35,        // step interval: time between steps while chasing
+                0.6,         // cooldown: rest after a bite
+                "bites",     // attack verb, for the message
+                "Rat", 6,    // name, max HP
+                row, col,    // where it starts
+                1, 3,        // damage (min, max)
+                7,           // sight range
+                5);          // gold
+    }
+
+    /** The orc: slow, tough, telegraphs a big hammer smash, worth lots of gold. */
+    public static Enemy orc(int row, int col) {
+        return new Enemy(Type.ORC,
+                0.7,         // windup (rat: 0.4) - longer warning, matching the big swing
+                0.55,        // step interval (rat: 0.35) - slower
+                1.0,         // cooldown (rat: 0.6)
+                "smashes",   // attack verb, for the message
+                "Orc", 50,   // name, max HP
+                row, col,    // where it starts
+                4, 8,        // damage (min, max)
+                6,           // sight range
+                20);         // gold
     }
 
     /** Runs one frame of the enemy's behaviour. Called by GameState.update() for every enemy. */
@@ -88,13 +125,13 @@ public class Enemy extends Entity {
                     // right next to the player: turn to face them and start the warning
                     setFacing(directionTowards(player));
                     state = State.WINDUP;
-                    stateTimer = WINDUP_TIME;
+                    stateTimer = windupTime;
                 } else {
-                    // otherwise take a step towards the player every STEP_INTERVAL seconds
+                    // otherwise take a step towards the player every stepInterval seconds
                     stateTimer -= deltaSeconds;
                     if (stateTimer <= 0 && !isMoving()) {
                         stepTowards(player, game);
-                        stateTimer = STEP_INTERVAL;
+                        stateTimer = stepInterval;
                     }
                 }
             }
@@ -112,12 +149,12 @@ public class Enemy extends Entity {
                 if (!biteLanded && getBiteHitbox().intersects(player.getHurtbox())) {
                     biteLanded = true;
                     int damage = Combat.rollDamage(minDamage, maxDamage, game.getRandom());
-                    game.damagePlayer(damage, "The " + getName() + " bites you");
+                    game.damagePlayer(damage, "The " + getName() + " " + attackVerb + " you");
                 }
                 stateTimer -= deltaSeconds;
                 if (stateTimer <= 0) {
                     state = State.COOLDOWN;
-                    stateTimer = COOLDOWN_TIME;
+                    stateTimer = cooldownTime;
                 }
             }
             case COOLDOWN -> {
@@ -215,5 +252,18 @@ public class Enemy extends Entity {
 
     public int getGoldDrop() {
         return goldDrop;
+    }
+
+    public Type getType() {
+        return type;
+    }
+
+    public double getWindupTime() {
+        return windupTime;
+    }
+
+    /** Seconds left in the current timed state (it counts down). The orc's art uses it during WINDUP. */
+    public double getStateTimer() {
+        return stateTimer;
     }
 }

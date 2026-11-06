@@ -189,4 +189,39 @@ class CombatTest {
         int damage = player.getMaxHp() - player.getHp();
         assertTrue(damage >= 1 && damage <= 3, "damage was " + damage);
     }
+
+    // ---------------------------------------------------------------- the orc
+
+    @Test
+    void capitalOInALevelMakesAnOrc() {
+        GameState state = level("#####", "#P.O#", "#####");
+        Enemy orc = onlyEnemy(state);
+        assertEquals(Enemy.Type.ORC, orc.getType());
+        assertEquals(20, orc.getMaxHp());
+    }
+
+    @Test
+    void ratsAreStillRats() {
+        GameState state = level("#####", "#P.r#", "#####");
+        assertEquals(Enemy.Type.RAT, onlyEnemy(state).getType());
+    }
+
+    @Test
+    void orcWarnsForLongerThanARat() {
+        GameState state = level("#####", "#PO.#", "#####");
+        Player player = state.getPlayer();
+        runFor(state, 0.5);                        // a rat would have bitten by now (0.4 s windup)
+        assertEquals(player.getMaxHp(), player.getHp());
+        assertEquals(Enemy.State.WINDUP, onlyEnemy(state).getState());
+    }
+
+    @Test
+    void orcSmashesHardAndSaysSo() {
+        GameState state = level("#####", "#PO.#", "#####");
+        Player player = state.getPlayer();
+        runFor(state, 0.8);                        // 0.7 s windup, then the smash
+        int damage = player.getMaxHp() - player.getHp();
+        assertTrue(damage >= 4 && damage <= 8, "damage was " + damage);
+        assertTrue(state.getMessage().startsWith("The Orc smashes you"), state.getMessage());
+    }
 }

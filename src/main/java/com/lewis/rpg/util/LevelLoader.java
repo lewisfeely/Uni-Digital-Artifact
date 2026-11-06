@@ -144,6 +144,10 @@ public final class LevelLoader {
                     case 'K' -> tiles[row][col] = Tile.KEY;
                     case 'R' -> tiles[row][col] = Tile.CHECKPOINT;
                     case 'T' -> tiles[row][col] = Tile.WALL_TORCH;
+                    case 'O' -> {
+                        tiles[row][col] = Tile.FLOOR;
+                        enemies.add(Enemy.orc(row, col));
+                    }
                     case '-' -> {
                         // stairs back to the previous level - the spot you arrive on, so it's the
                         // preferred start square for a level with no P
