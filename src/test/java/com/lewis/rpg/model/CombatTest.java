@@ -197,7 +197,7 @@ class CombatTest {
         GameState state = level("#####", "#P.O#", "#####");
         Enemy orc = onlyEnemy(state);
         assertEquals(Enemy.Type.ORC, orc.getType());
-        assertEquals(20, orc.getMaxHp());
+        assertEquals(50, orc.getMaxHp());
     }
 
     @Test
@@ -221,7 +221,7 @@ class CombatTest {
         Player player = state.getPlayer();
         runFor(state, 0.8);                        // 0.7 s windup, then the smash
         int damage = player.getMaxHp() - player.getHp();
-        assertTrue(damage >= 4 && damage <= 8, "damage was " + damage);
+        assertTrue(damage >= 10 && damage <= 15, "damage was " + damage);
         assertTrue(state.getMessage().startsWith("The Orc smashes you"), state.getMessage());
     }
 }

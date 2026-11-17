@@ -35,6 +35,8 @@ public class GameState {
     public static final int SWING_MAX_DAMAGE = 5;
     public static final int ARROW_MIN_DAMAGE = 2;
     public static final int ARROW_MAX_DAMAGE = 3;
+    /** How long the player's bow animation plays after a shot, in seconds. */
+    public static final double BOW_ANIMATION_TIME = 0.35;
     /** Arrows check for hits every quarter square so they can't skip through a wall or a rat. */
     private static final double ARROW_STEP = 0.25;
 
@@ -47,12 +49,15 @@ public class GameState {
     private final List<Arrow> arrows = new ArrayList<>();
     private final List<DamagePopup> popups = new ArrayList<>();
     private MeleeSwing swing = null;   // null when not swinging
-    private String message = "Arrows/WASD to move, Space to swing, F to shoot at the cursor.";   // shown in the bottom bar
+    private String message = "Arrows/W/D to move, J to swing, K to shoot at the cursor.";   // shown in the bottom bar
+    private boolean shopOpen = false;  // true while the merchant's shop is on screen (the game pauses)
 
     // ---- timers, in seconds, counted down in update() ----
     private double invincibleTime = 0;   // > 0 means the player can't be hurt
     private double swingCooldown = 0;    // > 0 means the sword isn't ready yet
     private double arrowCooldown = 0;    // > 0 means the bow isn't ready yet
+    private double bowAnimationTime = 0; // > 0 while the bow-shooting animation plays
+    private boolean bowAimLeft = false;  // which way the last arrow went, so the bow art can face it
 
     // where the mouse is pointing, in squares (set by App when the mouse moves)
     private boolean hasAim = false;
@@ -120,17 +125,23 @@ public class GameState {
         // 3. an enemy is standing there: blocked
         Enemy blocker = enemyAt(newRow, newCol);
         if (blocker != null) {
-            message = "A " + blocker.getName() + " is in the way. Space to swing!";
+            message = "A " + blocker.getName() + " is in the way. J to swing!";
             return false;
         }
 
-        // 4. a wall (or the edge of the map): blocked
+        // 4. the merchant: blocked, and walking into him opens his shop
+        if (getMap().isInBounds(newRow, newCol) && getMap().getTile(newRow, newCol) == Tile.MERCHANT) {
+            openShop();
+            return false;
+        }
+
+        // 5. a wall (or the edge of the map): blocked
         if (!getMap().isWalkable(newRow, newCol)) {
             message = "A wall blocks your way.";
             return false;
         }
 
-        // 5. the way is clear: move, then react to whatever is on the new square
+        // 6. the way is clear: move, then react to whatever is on the new square
         player.moveTo(newRow, newCol);
         int tile = getMap().getTile(newRow, newCol);
 
@@ -260,6 +271,8 @@ public class GameState {
                 dir[0], dir[1]));
         arrowCooldown = ARROW_COOLDOWN;
         faceTowards(dir[0], dir[1]);
+        bowAnimationTime = BOW_ANIMATION_TIME;   // start the bow animation
+        bowAimLeft = dir[0] < 0;                 // the art faces right, so flip it for shots to the left
         return true;
     }
 
@@ -302,11 +315,17 @@ public class GameState {
      * @param deltaSeconds time since the last update (about 0.016 at 60 frames a second)
      */
     public void update(double deltaSeconds) {
+        // 0. while the shop is open the whole game is paused: nothing moves, no timers count down
+        if (shopOpen) {
+            return;
+        }
+
         // 1. slide the player and count down every timer (Math.max stops them going below 0)
         player.updateSlide(deltaSeconds, PLAYER_SLIDE_SPEED);
         invincibleTime = Math.max(0, invincibleTime - deltaSeconds);
         swingCooldown = Math.max(0, swingCooldown - deltaSeconds);
         arrowCooldown = Math.max(0, arrowCooldown - deltaSeconds);
+        bowAnimationTime = Math.max(0, bowAnimationTime - deltaSeconds);
 
         // 2. traps fire and darts fly, then the player's attacks are checked against enemies
         updateTrapsAndDarts(deltaSeconds);
@@ -385,7 +404,9 @@ public class GameState {
         for (Enemy enemy : getEnemies()) {
             if (enemy.isAlive() && !swing.hasHit(enemy) && swing.getHitbox().intersects(enemy.getHurtbox())) {
                 swing.markHit(enemy);
-                damageEnemy(enemy, Combat.rollDamage(SWING_MIN_DAMAGE, SWING_MAX_DAMAGE, random));
+                // every sword upgrade adds the same bonus to the lowest and highest roll
+                int bonus = player.getSwordLevel() * Shop.SWORD_BONUS_PER_LEVEL;
+                damageEnemy(enemy, Combat.rollDamage(SWING_MIN_DAMAGE + bonus, SWING_MAX_DAMAGE + bonus, random));
             }
         }
         // count the swing down; once it ends there is no swing (null) until the next key press
@@ -413,7 +434,8 @@ public class GameState {
                     // did the tip land inside any enemy's hurtbox? Only the first one is hit.
                     for (Enemy enemy : getEnemies()) {
                         if (enemy.isAlive() && enemy.getHurtbox().contains(arrow.getX(), arrow.getY())) {
-                            damageEnemy(enemy, Combat.rollDamage(ARROW_MIN_DAMAGE, ARROW_MAX_DAMAGE, random));
+                            int bonus = player.getBowLevel() * Shop.BOW_BONUS_PER_LEVEL;   // bow upgrades
+                            damageEnemy(enemy, Combat.rollDamage(ARROW_MIN_DAMAGE + bonus, ARROW_MAX_DAMAGE + bonus, random));
                             finished = true;
                             break;
                         }
@@ -490,6 +512,48 @@ public class GameState {
 
     public Player getPlayer() {
         return player;
+    }
+
+    // ------------------------------------------------------------------ the merchant's shop
+
+    /** Opens the shop and pauses the game. Called when the player walks into the merchant. */
+    void openShop() {
+        shopOpen = true;
+        message = "\"Welcome, traveller! Care to sharpen your weapons?\"";
+    }
+
+    /** Buys the next sword upgrade if the player can afford it. Does nothing if the shop is closed. */
+    public void buySwordUpgrade() {
+        if (shopOpen) {
+            message = Shop.buySword(player);
+        }
+    }
+
+    /** Buys the next bow upgrade if the player can afford it. Does nothing if the shop is closed. */
+    public void buyBowUpgrade() {
+        if (shopOpen) {
+            message = Shop.buyBow(player);
+        }
+    }
+
+    /** Leaves the shop; the game carries on from where it paused. */
+    public void closeShop() {
+        shopOpen = false;
+        message = "\"Safe travels!\"";
+    }
+
+    public boolean isShopOpen() {
+        return shopOpen;
+    }
+
+    /** Seconds left of the bow animation (0 = not shooting). The renderer picks the frame from this. */
+    public double getBowAnimationTime() {
+        return bowAnimationTime;
+    }
+
+    /** True if the last arrow was shot to the left, so the bow art should be mirrored. */
+    public boolean isBowAimLeft() {
+        return bowAimLeft;
     }
 
     public String getMessage() {

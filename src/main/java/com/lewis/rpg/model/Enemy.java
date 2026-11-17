@@ -87,13 +87,13 @@ public class Enemy extends Entity {
     public static Enemy orc(int row, int col) {
         return new Enemy(Type.ORC,
                 0.7,         // windup (rat: 0.4) - longer warning, matching the big swing
-                0.55,        // step interval (rat: 0.35) - slower
-                1.0,         // cooldown (rat: 0.6)
+                0.35,        // step interval (rat: 0.35) - slower
+                0.3,         // cooldown (rat: 0.6)
                 "smashes",   // attack verb, for the message
                 "Orc", 50,   // name, max HP
                 row, col,    // where it starts
-                4, 8,        // damage (min, max)
-                6,           // sight range
+                10, 15,        // damage (min, max)
+                15,           // sight range
                 20);         // gold
     }
 

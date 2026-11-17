@@ -11,6 +11,7 @@ import com.lewis.rpg.model.GameState;
 import com.lewis.rpg.model.Hitbox;
 import com.lewis.rpg.model.MeleeSwing;
 import com.lewis.rpg.model.Player;
+import com.lewis.rpg.model.Shop;
 import com.lewis.rpg.model.Tile;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.image.Image;
@@ -43,7 +44,7 @@ public class GameRenderer {
 
     // ---- player animation settings ----
     /** Frames in each row of player.png (frames are square, laid out left to right). */
-    private static final int WALK_FRAMES = 4;
+    private static final int WALK_FRAMES = 3;
     /** Same idea as the FPS setting in Piskel's preview. */
     private static final double ANIMATION_FPS = 8;
     /** How long each frame is shown, in nanoseconds (1 second = 1,000,000,000 ns). */
@@ -64,6 +65,15 @@ public class GameRenderer {
     private final Image doorOpenImage = loadImage("door_open.png");
     private final Image keyImage = loadImage("key.png");
     private final Image playerSheet = loadImage("player.png");
+    private final Image merchantImage = loadImage("merchant.png");   // 32x32, stands on a floor tile
+    // bowanimation.png: five 32x32 frames, drawn aiming right -
+    // 0 standing, 1 lifting the bow, 2 bow up, 3 string drawn back, 4 arrow released
+    private final Image bowSheet = loadImage("bowanimation.png");
+    /**
+     * The order the bow frames play in after a shot. The arrow leaves the moment you press the key,
+     * so the animation starts at full draw, shows the release, then lowers the bow again.
+     */
+    private static final int[] BOW_FRAME_ORDER = {3, 4, 4, 2, 1};
     private final Image dartTrapImage = loadImage("dart_trap.png");          // drawn firing right
     private final Image dartTrapWarningImage = loadImage("dart_trap_warning.png");
     private final Image dartImage = loadImage("dart.png");
@@ -105,10 +115,11 @@ public class GameRenderer {
     private final Map<Integer, Double> chestOpenness = new HashMap<>();
     private long lastRenderTime = -1;   // used to work out how much time passed for the chest animation
 
-    /** Size of one frame in player.png, worked out from the image (16 for a 64x16 strip). */
-    private final int playerFrameSize = (int) playerSheet.getWidth() / WALK_FRAMES;
-    /** 1 row = one animation for every direction; 4 rows = down, left, right, up. */
-    private final int playerSheetRows = (int) playerSheet.getHeight() / playerFrameSize;
+    /** Size of one frame in player.png, in pixels (the art is drawn at 32x32, the same as a tile). */
+    private static final int PLAYER_FRAME_SIZE = 32;
+    /** How many frames fit across and down player.png (2 x 2 for the 64x64 sheet Piskel exports). */
+    private final int playerSheetColumns = (int) playerSheet.getWidth() / PLAYER_FRAME_SIZE;
+    private final int playerSheetRows = (int) playerSheet.getHeight() / PLAYER_FRAME_SIZE;
 
     /** Loads an image from src/main/resources/images, with a clear error if it's missing. */
     private Image loadImage(String fileName) {
@@ -158,6 +169,9 @@ public class GameRenderer {
             drawHitboxes(gc, state);
         }
         drawHud(gc, state, map.getRows() * TILE_SIZE, width);
+        if (state.isShopOpen()) {
+            drawShop(gc, state, width, map.getRows() * TILE_SIZE);   // on top of everything
+        }
     }
 
     // ------------------------------------------------------------------ combat drawing
@@ -396,6 +410,9 @@ public class GameRenderer {
                     if (tile == Tile.KEY) {
                         gc.drawImage(keyImage, x, y);   // transparent background, so the floor shows through
                     }
+                    if (tile == Tile.MERCHANT) {
+                        gc.drawImage(merchantImage, x, y);   // transparent background, so the floor shows through
+                    }
                 }
             }
         }
@@ -568,7 +585,21 @@ public class GameRenderer {
         // walking: cycle through the frames over time; standing still: frame 0
         // now / FRAME_TIME_NANOS counts up by 1 every frame-time; % WALK_FRAMES wraps it to 0, 1, 2, 3, 0, 1...
         int frame = player.isMoving() ? (int) ((now / FRAME_TIME_NANOS) % WALK_FRAMES) : 0;
-        int row = playerSheetRows >= 4 ? rowFor(player.getFacing()) : 0;
+
+        // ---- find where that frame sits in the sheet ----
+        int col;
+        int row;
+        if (playerSheetColumns >= WALK_FRAMES) {
+            // a whole walk cycle fits on one row: frames go across, and with 4 rows
+            // each row is a direction (down, left, right, up)
+            col = frame;
+            row = playerSheetRows >= 4 ? rowFor(player.getFacing()) : 0;
+        } else {
+            // the frames wrap onto the next row (Piskel's 2 x 2 grid):
+            // frame 0 = top left, 1 = top right, 2 = bottom left, 3 = bottom right
+            col = frame % playerSheetColumns;   // remainder = how far across
+            row = frame / playerSheetColumns;   // whole-number division = how many rows down
+        }
 
         // just been hit: blink by skipping every other tenth of a second
         double hurt = state.getHurtFlashTime();
@@ -576,9 +607,33 @@ public class GameRenderer {
             return;
         }
 
+        // ---- just shot an arrow: show the bow animation instead of walking ----
+        double bowTime = state.getBowAnimationTime();
+        if (bowTime > 0) {
+            // how far through the animation we are, from 0 (just fired) to almost 1 (finished)
+            double progress = 1 - bowTime / GameState.BOW_ANIMATION_TIME;
+            // turn that into a position in BOW_FRAME_ORDER (0 to 4), never past the last one
+            int step = Math.min((int) (progress * BOW_FRAME_ORDER.length), BOW_FRAME_ORDER.length - 1);
+            int bowFrame = BOW_FRAME_ORDER[step];
+
+            gc.save();
+            if (state.isBowAimLeft()) {
+                // the art aims right, so mirror it for shots to the left (same trick as the rats)
+                gc.translate(drawX + TILE_SIZE, drawY);
+                gc.scale(-1, 1);
+            } else {
+                gc.translate(drawX, drawY);
+            }
+            gc.drawImage(bowSheet, bowFrame * PLAYER_FRAME_SIZE, 0, PLAYER_FRAME_SIZE, PLAYER_FRAME_SIZE,
+                    0, 0, TILE_SIZE, TILE_SIZE);
+            gc.restore();
+            return;
+        }
+
         // cut one frame out of the sheet (source x, y, w, h) and draw it scaled to a square
+        // 32px frames onto 32px squares, so the art is drawn at its real size with no stretching
         gc.drawImage(playerSheet,
-                frame * playerFrameSize, row * playerFrameSize, playerFrameSize, playerFrameSize,
+                col * PLAYER_FRAME_SIZE, row * PLAYER_FRAME_SIZE, PLAYER_FRAME_SIZE, PLAYER_FRAME_SIZE,
                 drawX, drawY, TILE_SIZE, TILE_SIZE);
     }
 
@@ -618,16 +673,87 @@ public class GameRenderer {
         gc.fillText("Keys: " + player.getKeys(), 370, top + 24);
 
         // weapons: bright when ready, grey with a countdown while cooling down
-        drawWeaponStatus(gc, "[Space] Sword", state.getSwingCooldown(), 460, top + 24);
-        drawWeaponStatus(gc, "[F] Bow", state.getArrowCooldown(), 600, top + 24);
+        drawWeaponStatus(gc, "[j] Sword Lv" + player.getSwordLevel(), state.getSwingCooldown(), 460, top + 24);
+        drawWeaponStatus(gc, "[k] Bow Lv" + player.getBowLevel(), state.getArrowCooldown(), 640, top + 24);
         gc.setFill(Color.rgb(120, 120, 130));
-        gc.fillText("F3: hitboxes", width - 100, top + 24);
+        gc.fillText("H: hitboxes", width - 100, top + 24);
         // second line: whatever just happened ("You open a chest...")
         gc.setFill(Color.LIGHTGRAY);
         gc.fillText(state.getMessage(), 12, top + 48);
     }
 
     /** One weapon's label: bright blue when ready, grey with the seconds left while cooling down. */
+    // ------------------------------------------------------------------ the merchant's shop
+
+    /** The shop panel: a dark box in the middle of the map listing both upgrades. */
+    private void drawShop(GraphicsContext gc, GameState state, double width, double mapHeight) {
+        Player player = state.getPlayer();
+
+        // ---- dim the paused game behind the panel ----
+        gc.setGlobalAlpha(0.6);   // everything drawn now is 60% see-through
+        gc.setFill(Color.BLACK);
+        gc.fillRect(0, 0, width, mapHeight);
+        gc.setGlobalAlpha(1.0);   // back to solid
+
+        // ---- the panel, centred on the map ----
+        double panelW = 460;
+        double panelH = 230;
+        double left = (width - panelW) / 2;
+        double top = (mapHeight - panelH) / 2;
+        gc.setFill(Color.rgb(30, 24, 40));
+        gc.fillRect(left, top, panelW, panelH);
+        gc.setStroke(Color.rgb(240, 200, 60));
+        gc.setLineWidth(2);
+        gc.strokeRect(left, top, panelW, panelH);
+
+        // the merchant himself, drawn twice the size in the corner
+        gc.drawImage(merchantImage, left + panelW - 84, top + 14, 64, 64);
+
+        // ---- title and gold ----
+        gc.setFont(Font.font(22));
+        gc.setFill(Color.rgb(240, 200, 60));
+        gc.fillText("The Merchant", left + 20, top + 38);
+        gc.setFont(Font.font(14));
+        gc.setFill(Color.GOLD);
+        gc.fillText("Your gold: " + player.getGold(), left + 20, top + 62);
+
+        // ---- one line per weapon ----
+        drawShopLine(gc, "[1] Sword", player.getSwordLevel(), Shop.maxSwordLevel(),
+                GameState.SWING_MIN_DAMAGE, GameState.SWING_MAX_DAMAGE, Shop.SWORD_BONUS_PER_LEVEL,
+                Shop.nextCost(Shop.SWORD_COSTS, player.getSwordLevel()), player.getGold(), left + 20, top + 110);
+        drawShopLine(gc, "[2] Bow", player.getBowLevel(), Shop.maxBowLevel(),
+                GameState.ARROW_MIN_DAMAGE, GameState.ARROW_MAX_DAMAGE, Shop.BOW_BONUS_PER_LEVEL,
+                Shop.nextCost(Shop.BOW_COSTS, player.getBowLevel()), player.getGold(), left + 20, top + 150);
+
+        // ---- how to use it ----
+        gc.setFill(Color.rgb(150, 150, 165));
+        gc.fillText("Press 1 or 2 to buy  -  Esc to leave", left + 20, top + panelH - 20);
+    }
+
+    /**
+     * One weapon's line in the shop, e.g. "[1] Sword  Lv1  dmg 5-7  ->  7-9   30 gold".
+     * The price is greyed out when the player can't afford it, and shows MAX when fully upgraded.
+     */
+    private void drawShopLine(GraphicsContext gc, String label, int level, int maxLevel,
+                              int minDamage, int maxDamage, int bonusPerLevel,
+                              int price, int gold, double x, double y) {
+        int bonus = level * bonusPerLevel;   // damage added by the upgrades bought so far
+        gc.setFill(Color.WHITE);
+        gc.fillText(label + "   Lv" + level + "/" + maxLevel
+                + "   dmg " + (minDamage + bonus) + "-" + (maxDamage + bonus), x, y);
+        if (price == -1) {
+            gc.setFill(Color.rgb(140, 220, 255));
+            gc.fillText("MAX", x + 300, y);
+        } else {
+            int nextBonus = bonus + bonusPerLevel;
+            gc.setFill(Color.rgb(170, 230, 120));
+            gc.fillText("-> " + (minDamage + nextBonus) + "-" + (maxDamage + nextBonus), x + 230, y);
+            // gold if affordable, grey if not
+            gc.setFill(gold >= price ? Color.GOLD : Color.rgb(110, 110, 120));
+            gc.fillText(price + " gold", x + 330, y);
+        }
+    }
+
     private void drawWeaponStatus(GraphicsContext gc, String label, double cooldown, double x, double y) {
         if (cooldown <= 0) {
             gc.setFill(Color.rgb(140, 220, 255));

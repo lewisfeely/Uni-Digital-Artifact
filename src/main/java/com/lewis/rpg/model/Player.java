@@ -2,7 +2,7 @@ package com.lewis.rpg.model;
 
 /**
  * The hero. Inherits health, position, sliding movement and its hurtbox from Entity,
- * and adds the things only the player has: gold, keys and which way they are facing.
+ * and adds the things only the player has: gold, keys, weapon levels and which way they are facing.
  * Add attack, defence, XP, level and an inventory here as you go.
  */
 public class Player extends Entity {
@@ -10,6 +10,8 @@ public class Player extends Entity {
     private int gold;
     private int keys;
     private Direction facing = Direction.DOWN;   // starts facing the camera
+    private int swordLevel = 0;                  // upgrades bought from the merchant (0 = none)
+    private int bowLevel = 0;
 
     /** Creates the hero with 30 HP at the given square. super(...) runs Entity's constructor. */
     public Player(String name, int row, int col) {
@@ -27,6 +29,36 @@ public class Player extends Entity {
 
     public int getGold() {
         return gold;
+    }
+
+    /**
+     * Pays gold if the player has enough.
+     * @return true if the gold was spent, false if the player couldn't afford it (nothing changes)
+     */
+    public boolean spendGold(int amount) {
+        if (gold >= amount) {
+            gold -= amount;
+            return true;
+        }
+        return false;
+    }
+
+    // ---- weapon upgrades (bought from the merchant - see Shop) ----
+
+    public void upgradeSword() {
+        swordLevel++;
+    }
+
+    public void upgradeBow() {
+        bowLevel++;
+    }
+
+    public int getSwordLevel() {
+        return swordLevel;
+    }
+
+    public int getBowLevel() {
+        return bowLevel;
     }
 
     // ---- keys ----

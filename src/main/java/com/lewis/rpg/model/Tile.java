@@ -21,6 +21,7 @@ public final class Tile {
     public static final int WALL_TORCH = 8; // a wall with a torch on it - behaves exactly like a wall
     public static final int STAIRS_DOWN = 9;
     public static final int STAIRS_UP = 10;
+    public static final int MERCHANT = 11;  // the shopkeeper - solid; walking into him opens the shop
 
     /** Private constructor: this class only holds constants, so nobody should create one. */
     private Tile() {

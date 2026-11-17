@@ -31,7 +31,7 @@ public class App extends Application {
      * Swap test_small.txt for level1.txt once level1.txt has its '+' stairs.
      */
     private static final String[] LEVEL_FILES = {
-            "/levels/level1.txt",
+            "/levels/test_small.txt",
             "/levels/level2.txt"
     };
 
@@ -60,6 +60,16 @@ public class App extends Application {
         // ---- keyboard: a key goes down ----
         scene.setOnKeyPressed(event -> {
             KeyCode code = event.getCode();
+            // ---- while the shop is open, only the shop's keys do anything ----
+            if (state.isShopOpen()) {
+                switch (code) {
+                    case DIGIT1, NUMPAD1 -> state.buySwordUpgrade();
+                    case DIGIT2, NUMPAD2 -> state.buyBowUpgrade();
+                    case ESCAPE -> state.closeShop();
+                    default -> { }   // any other key is ignored while shopping
+                }
+                return;
+            }
             // attack and debug keys are checked first; "return" stops them also being treated as movement
             if (code == KeyCode.J) {
                 state.swing();              // sword towards the cursor (ignored while cooling down)
@@ -118,7 +128,11 @@ public class App extends Application {
 
                 // 2. holding a key keeps walking: take the next step once the slide has finished
                 //    (the most recently pressed key wins, so pressing a new key changes direction)
-                if (!heldDirections.isEmpty() && !state.getPlayer().isMoving()) {
+                if (state.isShopOpen()) {
+                    // forget held keys while shopping, or the player would walk straight back
+                    // into the merchant (and reopen the shop) the moment it closes
+                    heldDirections.clear();
+                } else if (!heldDirections.isEmpty() && !state.getPlayer().isMoving()) {
                     state.movePlayer(heldDirections.get(heldDirections.size() - 1));
                 }
                 // 3. draw the frame

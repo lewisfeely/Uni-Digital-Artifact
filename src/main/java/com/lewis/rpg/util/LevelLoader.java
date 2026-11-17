@@ -155,6 +155,7 @@ public final class LevelLoader {
                         stairsRow = row;
                         stairsCol = col;
                     }
+                    case '$' -> tiles[row][col] = Tile.MERCHANT;   // the shopkeeper
                     case '+' -> {
                         // stairs on to the next level - only used as the start if there's no '-'
                         tiles[row][col] = Tile.STAIRS_UP;
