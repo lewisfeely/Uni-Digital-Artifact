@@ -223,4 +223,21 @@ class GameStateTest {
         assertEquals(2, state.getLevelCount());
         assertEquals(0, state.getCurrentLevelIndex());
     }
+
+    // ------------------------------------------------------------------ torch light
+
+    @Test
+    void playerStartsWithTheDefaultLightRadius() {
+        GameState state = smallLevel();
+        assertEquals(GameState.START_LIGHT_RADIUS, state.getLightRadius(), 1e-9);
+    }
+
+    @Test
+    void lightRadiusCanChangeButNeverGoesBelowOneSquare() {
+        GameState state = smallLevel();
+        state.setLightRadius(6);
+        assertEquals(6, state.getLightRadius(), 1e-9);
+        state.setLightRadius(-3);
+        assertEquals(1, state.getLightRadius(), 1e-9);
+    }
 }

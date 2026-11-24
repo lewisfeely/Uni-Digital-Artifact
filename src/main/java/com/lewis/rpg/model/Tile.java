@@ -22,6 +22,7 @@ public final class Tile {
     public static final int STAIRS_DOWN = 9;
     public static final int STAIRS_UP = 10;
     public static final int MERCHANT = 11;  // the shopkeeper - solid; walking into him opens the shop
+    public static final int RAT_NEST = 12;  // a cave mouth that sends out rats - solid (see RatNest)
 
     /** Private constructor: this class only holds constants, so nobody should create one. */
     private Tile() {

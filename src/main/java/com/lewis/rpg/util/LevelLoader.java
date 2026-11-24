@@ -7,6 +7,7 @@ import com.lewis.rpg.model.GameMap;
 import com.lewis.rpg.model.GameState;
 import com.lewis.rpg.model.Level;
 import com.lewis.rpg.model.Player;
+import com.lewis.rpg.model.RatNest;
 import com.lewis.rpg.model.Tile;
 
 import java.io.BufferedReader;
@@ -123,6 +124,7 @@ public final class LevelLoader {
         int stairsRow = -1;  // -1 means "no stairs found yet"
         int stairsCol = -1;
         List<DartTrap> traps = new ArrayList<>();
+        List<RatNest> nests = new ArrayList<>();
         List<Enemy> enemies = new ArrayList<>();
 
         // ---- nested loop: go down the lines, then across each character of a line ----
@@ -160,6 +162,11 @@ public final class LevelLoader {
                         stairsCol = col;
                     }
                     case '$' -> tiles[row][col] = Tile.MERCHANT;   // the shopkeeper
+                    case 'N' -> {
+                        // a rat nest: a solid tile, plus a RatNest object for its timer
+                        tiles[row][col] = Tile.RAT_NEST;
+                        nests.add(new RatNest(row, col));
+                    }
                     case '+' -> {
                         // stairs on to the next level - only used as the start if there's no '-'
                         tiles[row][col] = Tile.STAIRS_UP;
@@ -201,7 +208,9 @@ public final class LevelLoader {
             startCol = stairsCol;
         }
         // ---- wrap the floor's own things up into a Level ----
-        return new Level(new GameMap(tiles), traps, enemies, startRow, startCol, hasPlayerStart);
+        Level level = new Level(new GameMap(tiles), traps, enemies, startRow, startCol, hasPlayerStart);
+        level.getNests().addAll(nests);
+        return level;
     }
 
     /** The arrow symbol points the way the trap fires. */

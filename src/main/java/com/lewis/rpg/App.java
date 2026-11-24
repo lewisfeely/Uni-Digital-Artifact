@@ -84,6 +84,10 @@ public class App extends Application {
                 renderer.toggleHitboxes();  // debug view
                 return;
             }
+            if (code == KeyCode.L) {
+                renderer.toggleDarkness();  // turn the torch darkness off/on while testing levels
+                return;
+            }
             // movement keys: remember the key is held, and take a step straight away
             Direction direction = toDirection(code);
             if (direction != null && !heldDirections.contains(direction)) {

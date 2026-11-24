@@ -24,7 +24,7 @@ import java.util.Random;
 public class GameState {
     // ---- rewards and trap damage ----
     private static final int CHEST_GOLD = 10;
-    public static final int DART_DAMAGE = 30;   // 30 = a dart knocks the player out in one hit
+    public static final int DART_DAMAGE = 12;   // 30 = a dart knocks the player out in one hit
 
     // ---- player combat settings ----
     public static final double PLAYER_SLIDE_SPEED = 5.0;     // squares per second
@@ -37,6 +37,8 @@ public class GameState {
     public static final int ARROW_MAX_DAMAGE = 3;
     /** How long the player's bow animation plays after a shot, in seconds. */
     public static final double BOW_ANIMATION_TIME = 0.35;
+    /** How far the player's torch lights up around them at the start, in squares. */
+    public static final double START_LIGHT_RADIUS = 7.0;
     /** Arrows check for hits every quarter square so they can't skip through a wall or a rat. */
     private static final double ARROW_STEP = 0.25;
 
@@ -51,6 +53,7 @@ public class GameState {
     private MeleeSwing swing = null;   // null when not swinging
     private String message = "Arrows/W/D to move, J to swing, K to shoot at the cursor.";   // shown in the bottom bar
     private boolean shopOpen = false;  // true while the merchant's shop is on screen (the game pauses)
+    private double lightRadius = START_LIGHT_RADIUS;   // how far the player can see, in squares
 
     // ---- timers, in seconds, counted down in update() ----
     private double invincibleTime = 0;   // > 0 means the player can't be hurt
@@ -329,6 +332,7 @@ public class GameState {
 
         // 2. traps fire and darts fly, then the player's attacks are checked against enemies
         updateTrapsAndDarts(deltaSeconds);
+        updateNests(deltaSeconds);
         updateSwing(deltaSeconds);
         updateArrows(deltaSeconds);
 
@@ -344,6 +348,42 @@ public class GameState {
             popup.update(deltaSeconds);
         }
         popups.removeIf(DamagePopup::isFinished);
+    }
+
+    /**
+     * Runs every rat nest on this level. When one says it's time, a new rat is placed on a free
+     * square next to it. (This loops over the nests, not the enemies, so adding to the enemy list
+     * here is safe - changing a list while looping over that same list would crash.)
+     */
+    private void updateNests(double deltaSeconds) {
+        for (RatNest nest : getNests()) {
+            if (nest.update(deltaSeconds, player.getRow(), player.getCol())) {
+                int[] spot = freeSquareNextTo(nest.getRow(), nest.getCol());
+                if (spot != null) {   // boxed in? no rat this time; it tries again next interval
+                    Enemy rat = Enemy.rat(spot[0], spot[1]);
+                    getEnemies().add(rat);
+                    nest.addSpawned(rat);
+                    message = "A rat scurries out of the nest!";
+                }
+            }
+        }
+    }
+
+    /**
+     * The first free square next to (row, col), checking below first (the way the nest's
+     * mouth faces), then left, right and above.
+     * @return {row, col} of a free square, or null if all four are blocked
+     */
+    private int[] freeSquareNextTo(int row, int col) {
+        Direction[] order = {Direction.DOWN, Direction.LEFT, Direction.RIGHT, Direction.UP};
+        for (Direction dir : order) {
+            int r = row + dir.getRowChange();
+            int c = col + dir.getColChange();
+            if (isFreeForEnemy(r, c)) {
+                return new int[] {r, c};
+            }
+        }
+        return null;
     }
 
     /** Counts every trap down, adds a dart for each one that fires, then moves all the darts. */
@@ -552,6 +592,19 @@ public class GameState {
         return shopOpen;
     }
 
+    /**
+     * How far the player can see, in squares. Kept here in the rules (not in the renderer) so that
+     * gameplay can change it later - torch fuel running low, picking up a torch, a lantern upgrade.
+     */
+    public double getLightRadius() {
+        return lightRadius;
+    }
+
+    /** Changes how far the player can see (never below 1 square, so they can always see themselves). */
+    public void setLightRadius(double squares) {
+        lightRadius = Math.max(1, squares);
+    }
+
     /** Seconds left of the bow animation (0 = not shooting). The renderer picks the frame from this. */
     public double getBowAnimationTime() {
         return bowAnimationTime;
@@ -569,6 +622,11 @@ public class GameState {
     /** The traps on the current level. */
     public List<DartTrap> getTraps() {
         return level().getTraps();
+    }
+
+    /** The rat nests on the current level. */
+    public List<RatNest> getNests() {
+        return level().getNests();
     }
 
     /** The darts flying on the current level. */

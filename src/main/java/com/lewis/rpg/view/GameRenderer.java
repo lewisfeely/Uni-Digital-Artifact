@@ -11,6 +11,7 @@ import com.lewis.rpg.model.GameState;
 import com.lewis.rpg.model.Hitbox;
 import com.lewis.rpg.model.MeleeSwing;
 import com.lewis.rpg.model.Player;
+import com.lewis.rpg.model.RatNest;
 import com.lewis.rpg.model.Shop;
 import com.lewis.rpg.model.Tile;
 import javafx.scene.canvas.GraphicsContext;
@@ -22,7 +23,9 @@ import javafx.scene.paint.Stop;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -58,6 +61,7 @@ public class GameRenderer {
     private static final long RAT_STEP_NANOS = 120_000_000L;   // swap scurry frames every 0.12 s
     /** F3 toggles drawing every hitbox as an outline - handy for tuning combat. */
     private boolean showHitboxes = false;
+    private boolean showDarkness = true;   // the torch light; L turns it off to look round a level while testing
 
     // ---- tiles, items and the player (each image is loaded once, when the renderer is created) ----
     private final Image floorImage = loadImage("floor.png");
@@ -66,6 +70,10 @@ public class GameRenderer {
     private final Image keyImage = loadImage("key.png");
     private final Image playerSheet = loadImage("player.png");
     private final Image merchantImage = loadImage("merchant.png");   // 32x32, stands on a floor tile
+    // ratspawner.png: five 32x32 frames in a 2-wide grid (64x96) -
+    // 0 dark cave mouth (the default), then 1-4 the yellow glow growing before a rat comes out
+    private final Image ratNestSheet = loadImage("ratspawner.png");
+    private static final int NEST_GLOW_FRAMES = 4;   // frames 1, 2, 3, 4
     // bowanimation.png: five 32x32 frames, drawn aiming right -
     // 0 standing, 1 lifting the bow, 2 bow up, 3 string drawn back, 4 arrow released
     private final Image bowSheet = loadImage("bowanimation.png");
@@ -140,9 +148,14 @@ public class GameRenderer {
         return new Image(stream);
     }
 
-    /** Switches the F3 debug view on or off (! flips true to false and back). */
+    /** Switches the H debug view on or off (! flips true to false and back). */
     public void toggleHitboxes() {
         showHitboxes = !showHitboxes;
+    }
+
+    /** Switches the darkness on or off (L key) - handy for checking a level while testing. */
+    public void toggleDarkness() {
+        showDarkness = !showDarkness;
     }
 
     /**
@@ -168,11 +181,17 @@ public class GameRenderer {
         drawChests(gc, state, deltaSeconds, now);
         drawTorchGlow(gc, map, now);
         drawTraps(gc, state);
+        drawNests(gc, state);
         drawEnemies(gc, state, now);
         drawPlayer(gc, state, now);
         drawSwing(gc, state);
         drawDarts(gc, state);
         drawArrows(gc, state);
+        // the darkness goes over the world but under the aim line, damage numbers and HUD,
+        // so anything outside the torch light is hidden but you can still aim and read the bar
+        if (showDarkness) {
+            drawDarkness(gc, state, width, map.getRows() * TILE_SIZE, now);
+        }
         drawAim(gc, state);
         drawPopups(gc, state);
         if (showHitboxes) {
@@ -356,6 +375,127 @@ public class GameRenderer {
         gc.drawImage(sheet, frame * ORC_FRAME_SIZE, 0, ORC_FRAME_SIZE, ORC_FRAME_SIZE,
                 -8, -14, ORC_FRAME_SIZE, ORC_FRAME_SIZE);
         gc.restore();
+    }
+
+    // ------------------------------------------------------------------ the torch light
+
+    /** Size of one cell of the light map, in pixels: 4 x 4 cells per square, fine enough to look smooth. */
+    private static final int LIGHT_CELL = 8;
+    /** How far each wall torch lights the floor around it, in squares. */
+    private static final double WALL_TORCH_LIGHT_RADIUS = 3.0;
+    /** Wall torches are a little dimmer than the player's own torch: their brightest spot is 10% dark. */
+    private static final double WALL_TORCH_MIN_DARKNESS = 0.10;
+    /** 33 ready-made shades of black, from see-through (0) to solid (32), so no new Color is made per cell. */
+    private static final Color[] DARK_SHADES = new Color[33];
+    static {
+        for (int i = 0; i < DARK_SHADES.length; i++) {
+            DARK_SHADES[i] = Color.rgb(0, 0, 0, i / 32.0);
+        }
+    }
+
+    /** Where the lit wall torches are on the current map, worked out once per map (see findWallTorches). */
+    private List<int[]> wallTorches = new ArrayList<>();
+    private GameMap wallTorchesMap = null;   // which map that list belongs to
+
+    /**
+     * Covers the map in darkness, lit by the player's torch AND the torches on the walls.
+     *
+     * One gradient can only cut one hole, so this uses a "light map" instead: the map is split into
+     * small cells (LIGHT_CELL pixels), and for each cell we ask every light "how dark would I be
+     * if you were the only light?" and keep the lightest answer. Then each cell is filled with
+     * black at that darkness. Wherever two lights overlap, the brighter one wins.
+     */
+    private void drawDarkness(GraphicsContext gc, GameState state, double width, double mapHeight, long now) {
+        GameMap map = state.getMap();
+        Player player = state.getPlayer();
+
+        // ---- collect the lights: {centre x, centre y, radius, darkest it ever gets} all in pixels ----
+        List<double[]> lights = new ArrayList<>();
+
+        // the player's torch: centred on their square, gliding with them, gently flickering
+        // (two sine waves at different speeds look less mechanical than one)
+        double flicker = Math.sin(now / 90_000_000.0) * 0.08 + Math.sin(now / 37_000_000.0) * 0.04;
+        double px = (player.getX() + 0.5) * TILE_SIZE;
+        double py = (player.getY() + 0.5) * TILE_SIZE;
+        double playerRadius = (state.getLightRadius() + flicker) * TILE_SIZE;
+        lights.add(new double[] {px, py, playerRadius, 0.0});
+
+        // the wall torches: light pools on the floor just below each one, each flickering on its own
+        for (int[] torch : findWallTorches(map)) {
+            int row = torch[0];
+            int col = torch[1];
+            double torchFlicker = 0.1 * Math.sin(now / 90_000_000.0 + col * 1.7);   // + col: out of step
+            lights.add(new double[] {
+                    (col + 0.5) * TILE_SIZE,                 // middle of the torch's column
+                    (row + 1.25) * TILE_SIZE,                // a little way onto the floor below it
+                    (WALL_TORCH_LIGHT_RADIUS + torchFlicker) * TILE_SIZE,
+                    WALL_TORCH_MIN_DARKNESS});
+        }
+
+        // a warm, firelit tint around the player (the wall torches already have their own orange glow)
+        gc.setFill(new RadialGradient(0, 0, px, py, playerRadius * 0.8, false, CycleMethod.NO_CYCLE,
+                new Stop(0, Color.rgb(255, 150, 60, 0.10)),
+                new Stop(1, Color.rgb(255, 150, 60, 0))));
+        gc.fillOval(px - playerRadius, py - playerRadius, playerRadius * 2, playerRadius * 2);
+
+        // ---- the light map: a nested loop over every cell ----
+        for (double y = 0; y < mapHeight; y += LIGHT_CELL) {
+            for (double x = 0; x < width; x += LIGHT_CELL) {
+                double cellX = x + LIGHT_CELL / 2.0;   // test the middle of the cell
+                double cellY = y + LIGHT_CELL / 2.0;
+
+                // start fully dark, then let each light make it lighter (Math.min keeps the lightest)
+                double darkness = 1.0;
+                for (double[] light : lights) {
+                    double distance = Math.hypot(cellX - light[0], cellY - light[1]);
+                    double fromThisLight = Math.max(light[3], falloff(distance / light[2]));
+                    darkness = Math.min(darkness, fromThisLight);
+                }
+
+                // pick the nearest ready-made shade and fill the cell (skip cells that are fully lit)
+                int shade = (int) Math.round(darkness * 32);
+                if (shade > 0) {
+                    gc.setFill(DARK_SHADES[shade]);
+                    gc.fillRect(x, y, LIGHT_CELL, LIGHT_CELL);
+                }
+            }
+        }
+    }
+
+    /**
+     * How dark a spot is, from how far it is from a light as a fraction of that light's radius:
+     * 0 = at the light, 1 = at its edge. Clear near the middle, then fading faster towards the edge,
+     * and fully black (1.0) at the edge and beyond - the same shape as the old single gradient.
+     */
+    private static double falloff(double fraction) {
+        if (fraction >= 1) {
+            return 1.0;                                            // outside the light: black
+        } else if (fraction > 0.75) {
+            return 0.6 + (fraction - 0.75) / 0.25 * 0.4;           // 0.6 -> 1.0: the dark rim
+        } else if (fraction > 0.45) {
+            return 0.12 + (fraction - 0.45) / 0.30 * 0.48;         // 0.12 -> 0.6: getting dim
+        }
+        return fraction / 0.45 * 0.12;                             // 0 -> 0.12: almost fully lit
+    }
+
+    /**
+     * Every torch that is actually lit: a WALL_TORCH tile with open floor directly below it
+     * (the same rule drawTorchGlow uses). Searching the whole map takes a nested loop, so the
+     * answer is remembered and only worked out again when the map changes (a new level).
+     */
+    private List<int[]> findWallTorches(GameMap map) {
+        if (map != wallTorchesMap) {
+            wallTorches = new ArrayList<>();
+            for (int row = 0; row < map.getRows(); row++) {
+                for (int col = 0; col < map.getCols(); col++) {
+                    if (map.getTile(row, col) == Tile.WALL_TORCH && isOpen(map, row + 1, col)) {
+                        wallTorches.add(new int[] {row, col});
+                    }
+                }
+            }
+            wallTorchesMap = map;
+        }
+        return wallTorches;
     }
 
     /** Draws the sword arc, fading out over the swing's 0.15 seconds. */
@@ -623,6 +763,27 @@ public class GameRenderer {
         }
     }
 
+    /**
+     * Draws each rat nest. It sits on frame 0 (the dark cave mouth) until a rat is about to come
+     * out; during the last RatNest.WARNING_TIME seconds it plays the glow, frames 1 to 4.
+     */
+    private void drawNests(GraphicsContext gc, GameState state) {
+        int columns = (int) ratNestSheet.getWidth() / TILE_SIZE;   // 2 frames across the sheet
+        for (RatNest nest : state.getNests()) {
+            int frame = 0;
+            if (nest.isWarning()) {
+                // progress 0..1 through the warning -> frames 1, 2, 3, 4 (never past 4)
+                int step = (int) (nest.getWarningProgress() * NEST_GLOW_FRAMES);
+                frame = 1 + Math.min(step, NEST_GLOW_FRAMES - 1);
+            }
+            // find the frame in the grid: % gives how far across, / gives how many rows down
+            int sx = (frame % columns) * TILE_SIZE;
+            int sy = (frame / columns) * TILE_SIZE;
+            gc.drawImage(ratNestSheet, sx, sy, TILE_SIZE, TILE_SIZE,
+                    nest.getCol() * TILE_SIZE, nest.getRow() * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+        }
+    }
+
     /** Draws every dart in flight. */
     private void drawDarts(GraphicsContext gc, GameState state) {
         for (Dart dart : state.getDarts()) {
@@ -748,7 +909,7 @@ public class GameRenderer {
         drawWeaponStatus(gc, "[j] Sword Lv" + player.getSwordLevel(), state.getSwingCooldown(), 460, top + 24);
         drawWeaponStatus(gc, "[k] Bow Lv" + player.getBowLevel(), state.getArrowCooldown(), 640, top + 24);
         gc.setFill(Color.rgb(120, 120, 130));
-        gc.fillText("H: hitboxes", width - 100, top + 24);
+        gc.fillText("H: hitboxes  L: light", width - 150, top + 24);
         // second line: whatever just happened ("You open a chest...")
         gc.setFill(Color.LIGHTGRAY);
         gc.fillText(state.getMessage(), 12, top + 48);

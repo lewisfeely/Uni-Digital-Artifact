@@ -19,6 +19,7 @@ public class Level {
     private final List<DartTrap> traps;
     private final List<Enemy> enemies;              // dead enemies are removed from this list
     private final List<Dart> darts = new ArrayList<>();   // darts currently flying on this floor
+    private final List<RatNest> nests = new ArrayList<>(); // rat nests on this floor (LevelLoader fills it)
 
     // ---- where the player comes back after collapsing on this floor ----
     private int checkpointRow;
@@ -74,6 +75,10 @@ public class Level {
 
     public List<Dart> getDarts() {
         return darts;
+    }
+
+    public List<RatNest> getNests() {
+        return nests;
     }
 
     public int getCheckpointRow() {

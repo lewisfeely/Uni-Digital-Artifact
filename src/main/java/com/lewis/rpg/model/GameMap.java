@@ -62,7 +62,8 @@ public class GameMap {
             return false;   // the edge of the map counts as a wall
         }
         int tile = tiles[row][col];
-        return !Tile.isWall(tile) && tile != Tile.DOOR && tile != Tile.DART_TRAP && tile != Tile.MERCHANT;
+        return !Tile.isWall(tile) && tile != Tile.DOOR && tile != Tile.DART_TRAP && tile != Tile.MERCHANT
+                && tile != Tile.RAT_NEST;
     }
 
     /** True if a dart or arrow flying into this cell stops here. They fly over chests, keys and open doors. */
@@ -71,7 +72,8 @@ public class GameMap {
             return true;    // anything leaving the map is stopped
         }
         int tile = tiles[row][col];
-        return Tile.isWall(tile) || tile == Tile.DOOR || tile == Tile.DART_TRAP || tile == Tile.MERCHANT;
+        return Tile.isWall(tile) || tile == Tile.DOOR || tile == Tile.DART_TRAP || tile == Tile.MERCHANT
+                || tile == Tile.RAT_NEST;
     }
 
     // ---- searching the whole map ----
