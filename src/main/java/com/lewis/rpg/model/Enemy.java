@@ -26,8 +26,6 @@ public class Enemy extends Entity {
 
     // ---- timings, in seconds, shared by every enemy (the rest are per enemy, below) ----
     public static final double BITE_TIME = 0.15;       // how long the attack hitbox exists
-    /** How fast it glides between squares, in squares per second. */
-    public static final double SLIDE_SPEED = 4.0;
     /** How long it blinks after being hit. */
     public static final double HURT_FLASH_TIME = 0.3;
 
@@ -79,7 +77,7 @@ public class Enemy extends Entity {
                 "Rat", 6,    // name, max HP
                 row, col,    // where it starts
                 1, 3,        // damage (min, max)
-                7,           // sight range
+                15,           // sight range
                 5);          // gold
     }
 
@@ -110,14 +108,14 @@ public class Enemy extends Entity {
                 "Knight", 120,   // name, max HP
                 row, col,    // where he starts
                 12, 18,      // damage (min, max)
-                10,          // sight range
+                30,          // sight range
                 100);        // gold
     }
 
     /** Runs one frame of the enemy's behaviour. Called by GameState.update() for every enemy. */
     void update(double deltaSeconds, GameState game) {
         // ---- every frame, whatever the state: glide towards its square, count down the blink ----
-        updateSlide(deltaSeconds, SLIDE_SPEED);
+        updateSlide(deltaSeconds, glideSpeed());
         if (hurtFlashTime > 0) {
             hurtFlashTime = Math.max(0, hurtFlashTime - deltaSeconds);
         }
@@ -272,8 +270,31 @@ public class Enemy extends Entity {
         return state;
     }
 
+    /**
+     * How fast this enemy glides between squares, in squares per second.
+     *
+     * Every enemy glides at exactly 1 / stepInterval: one square takes its whole step interval,
+     * so the glide finishes just as its next step is due and it moves without stopping.
+     * Faster enemies (a shorter stepInterval) glide faster, so each one keeps its own pace -
+     * e.g. a rat or orc stepping every 0.35 s glides at about 2.9 squares per second,
+     * the knight stepping every 0.45 s at about 2.2.
+     */
+    private double glideSpeed() {
+        return 1.0 / stepInterval;
+    }
+
     public boolean isBiting() {
         return state == State.BITE;
+    }
+
+    /**
+     * True while this enemy is protected and can't be hurt. Only the knight guards: his shield
+     * blocks every hit while he is standing (IDLE) or marching towards you (CHASE). The moment he
+     * commits to an attack - raising his sword (WINDUP), swinging (BITE) or recovering (COOLDOWN) -
+     * his guard is open and he can be hit. Rats and orcs never guard.
+     */
+    public boolean isGuarding() {
+        return type == Type.KNIGHT && (state == State.IDLE || state == State.CHASE);
     }
 
     /** Which way to draw the sprite: rats only have left/right art, so up/down keep the last one. */
@@ -291,6 +312,11 @@ public class Enemy extends Entity {
 
     public Type getType() {
         return type;
+    }
+
+    /** Seconds between steps while chasing. The knight's walk animation is timed from this. */
+    public double getStepInterval() {
+        return stepInterval;
     }
 
     public double getWindupTime() {

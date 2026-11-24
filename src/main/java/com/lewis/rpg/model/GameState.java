@@ -453,6 +453,12 @@ public class GameState {
      * A dead enemy pays out its gold here; it is removed from the list at the end of update().
      */
     private void damageEnemy(Enemy enemy, int damage) {
+        // a guarding enemy (the knight with his shield up) takes no damage at all
+        if (enemy.isGuarding()) {
+            popups.add(new DamagePopup(enemy.getCentreX(), enemy.getY(), "Blocked!", false));
+            message = "The " + enemy.getName() + " blocks with his shield! Strike while he attacks.";
+            return;   // stop here: no damage, no blink
+        }
         enemy.takeDamage(damage);
         enemy.flashHurt();
         popups.add(new DamagePopup(enemy.getCentreX(), enemy.getY(), "-" + damage, false));

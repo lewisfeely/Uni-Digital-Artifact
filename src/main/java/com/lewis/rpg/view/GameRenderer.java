@@ -89,12 +89,10 @@ public class GameRenderer {
     private final Image knightWalkImage = loadImage("knight_walk.png");
     private final Image knightAttackImage = loadImage("knight_attack.png");
     private static final int KNIGHT_FRAME_SIZE = 64;
-    private static final long KNIGHT_STEP_NANOS = 160_000_000L;   // next walk frame every 0.16 s
     // in each frame his feet are 55px down and his body is centred 22px across,
     // so he is drawn this far left and up from his square to stand on it
     private static final int KNIGHT_OFFSET_X = -6;
     private static final int KNIGHT_OFFSET_Y = -23;
-    private static final long ORC_STEP_NANOS = 150_000_000L;   // next walk frame every 0.15 s
 
     // ---- dungeon walls ----
     private final Image wallFaceImage = loadImage("wall_face.png");
@@ -271,7 +269,11 @@ public class GameRenderer {
         Image sheet = walking ? knightWalkImage : knightAttackImage;
         int frame;
         if (walking) {
-            frame = (int) ((now / KNIGHT_STEP_NANOS) % 4);   // 0, 1, 2, 3, 0, 1...
+            // one square = one footstep = 2 frames, so each frame lasts half his step interval.
+            // Timing it from his speed keeps his feet in step with how fast he moves,
+            // even if you change his stepInterval in Enemy.knight()
+            long frameNanos = (long) (enemy.getStepInterval() / 2 * 1_000_000_000L);
+            frame = (int) ((now / frameNanos) % 4);   // 0, 1, 2, 3, 0, 1...
         } else {
             frame = switch (enemy.getState()) {
                 // the warning: first half sword raised, second half it tips forward ready to come over
@@ -281,8 +283,13 @@ public class GameRenderer {
                 default -> 0;                                    // standing still: your drawing
             };
         }
+        // which way to mirror him: the two sheets need opposite flips
+        // - walking: lead with the shield, which is on the LEFT of the picture,
+        //   so flip when he walks right
+        // - attacking: the sword swings to the RIGHT of the picture, so flip when he faces left
+        boolean flip = walking ? !enemy.isFacingLeft() : enemy.isFacingLeft();
         gc.save();
-        if (enemy.isFacingLeft()) {
+        if (flip) {
             gc.translate(px + TILE_SIZE, py);
             gc.scale(-1, 1);
         } else {
@@ -322,9 +329,12 @@ public class GameRenderer {
         // ---- pick the frame from that sheet ----
         int frame;
         if (walking) {
+            // one square = one footstep = 2 frames, so each frame lasts half his step interval
+            // (the same as the knight), keeping his feet in step with how fast he moves.
             // now is in nanoseconds; dividing by the frame time counts up 0, 1, 2, 3, 4...
             // and % 4 wraps it round to 0, 1, 2, 3, 0, 1...
-            frame = (int) ((now / ORC_STEP_NANOS) % 4);
+            long frameNanos = (long) (enemy.getStepInterval() / 2 * 1_000_000_000L);
+            frame = (int) ((now / frameNanos) % 4);
         } else {
             frame = switch (enemy.getState()) {
                 // the timer counts down, so "more than half left" = the first half of the warning

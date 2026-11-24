@@ -153,10 +153,11 @@ class CombatTest {
 
     @Test
     void ratStaysIdleWhenFarAway() {
-        GameState state = level("############", "#P........r#", "############");
+        // further away than the rat's sight range (15 squares), so it never notices you
+        GameState state = level("######################", "#P..................r#", "######################");
         Enemy rat = onlyEnemy(state);
         runFor(state, 1.0);
-        assertEquals(10, rat.getCol());
+        assertEquals(20, rat.getCol());
         assertEquals(Enemy.State.IDLE, rat.getState());
     }
 
@@ -255,5 +256,82 @@ class CombatTest {
         int damage = player.getMaxHp() - player.getHp();
         assertTrue(damage >= 12 && damage <= 18, "damage was " + damage);
         assertTrue(state.getMessage().startsWith("The Knight slashes you"), state.getMessage());
+    }
+
+    @Test
+    void knightBlocksHitsUntilHeAttacks() {
+        // the knight is 3 squares away, so he marches (CHASE) before he can attack
+        GameState state = level("#######", "#P..B.#", "#######");
+        Enemy knight = onlyEnemy(state);
+        runFor(state, 0.1);
+        assertEquals(Enemy.State.CHASE, knight.getState());
+        assertTrue(knight.isGuarding());
+        state.setAim(4.5, 1.5);
+        state.shootArrow();
+        runFor(state, 0.3);                          // the arrow reaches him...
+        assertEquals(knight.getMaxHp(), knight.getHp());   // ...and is blocked
+        assertTrue(state.getMessage().contains("blocks"), state.getMessage());
+    }
+
+    @Test
+    void knightCanBeHitWhileAttacking() {
+        GameState state = level("#####", "#PB.#", "#####");
+        Enemy knight = onlyEnemy(state);
+        runFor(state, 0.1);                          // next to you: he raises his sword
+        assertEquals(Enemy.State.WINDUP, knight.getState());
+        assertFalse(knight.isGuarding());
+        state.setAim(2.5, 1.5);
+        state.swing();
+        runFor(state, 0.05);
+        assertTrue(knight.getHp() < knight.getMaxHp());   // guard open: the hit lands
+    }
+
+    @Test
+    void otherEnemiesNeverGuard() {
+        assertFalse(Enemy.rat(1, 1).isGuarding());
+        assertFalse(Enemy.orc(1, 1).isGuarding());
+    }
+
+    @Test
+    void knightMarchesWithoutStopping() {
+        // a long corridor, so he has several squares to walk before reaching you
+        GameState state = level("#############", "#P.........B#", "#############");
+        Enemy knight = onlyEnemy(state);
+        runFor(state, 0.6);                          // let him wake up and start walking
+        int framesStill = 0;
+        for (int i = 0; i < 90; i++) {               // 1.5 seconds of marching, 60 frames a second
+            state.update(1.0 / 60);
+            if (knight.getState() == Enemy.State.CHASE && !knight.isMoving()) {
+                framesStill++;
+            }
+        }
+        // at most a single frame's pause per step (about 3 steps in 1.5 s) - before, he stood still for ~12
+        assertTrue(framesStill <= 3, "stood still for " + framesStill + " frames");
+    }
+
+    @Test
+    void knightKeepsHisOverallSpeed() {
+        GameState state = level("#############", "#P.........B#", "#############");
+        Enemy knight = onlyEnemy(state);
+        int startCol = knight.getCol();
+        runFor(state, 0.45 * 4 + 0.05);              // four step intervals
+        assertEquals(4, startCol - knight.getCol(), 1);   // about 4 squares, the same pace as before
+    }
+
+    @Test
+    void ratsAndOrcsAlsoMoveWithoutStopping() {
+        for (String enemy : new String[] {"r", "O"}) {
+            GameState state = level("#############", "#P........." + enemy + "#", "#############");
+            Enemy e = onlyEnemy(state);
+            runFor(state, 0.5);                      // let it wake up and start moving
+            int framesStill = 0;
+            for (int i = 0; i < 60; i++) {           // 1 second at 60 frames a second
+                state.update(1.0 / 60);
+                if (e.getState() == Enemy.State.CHASE && !e.isMoving()) {
+                    framesStill++;
+                }
+            }
+            assertTrue(framesStill <= 3, enemy + " stood still for " + framesStill + " frames");
+        }
     }
 }
