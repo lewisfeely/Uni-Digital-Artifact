@@ -224,4 +224,36 @@ class CombatTest {
         assertTrue(damage >= 10 && damage <= 15, "damage was " + damage);
         assertTrue(state.getMessage().startsWith("The Orc smashes you"), state.getMessage());
     }
+
+    // ---------------------------------------------------------------- the knight boss
+
+    @Test
+    void capitalBInALevelMakesTheKnight() {
+        GameState state = level("######", "#P..B#", "######");
+        Enemy knight = onlyEnemy(state);
+        assertEquals(Enemy.Type.KNIGHT, knight.getType());
+        assertEquals(120, knight.getMaxHp());
+    }
+
+    @Test
+    void knightsHurtboxCoversHisWholeBody() {
+        Enemy knight = Enemy.knight(5, 5);
+        Hitbox body = knight.getHurtbox();
+        // a point at head height, most of a square above his feet, still counts as a hit
+        assertTrue(body.intersects(new Hitbox(5.5, 4.5, 0.05, 0.05)));
+        // a rat's hurtbox at the same spot doesn't reach that high
+        assertFalse(Enemy.rat(5, 5).getHurtbox().intersects(new Hitbox(5.5, 4.5, 0.05, 0.05)));
+    }
+
+    @Test
+    void knightSlashesHardAndSaysSo() {
+        GameState state = level("#####", "#PB.#", "#####");
+        Player player = state.getPlayer();
+        runFor(state, 0.5);                        // still raising his sword (0.6 s windup)
+        assertEquals(player.getMaxHp(), player.getHp());
+        runFor(state, 0.3);                        // the slash lands
+        int damage = player.getMaxHp() - player.getHp();
+        assertTrue(damage >= 12 && damage <= 18, "damage was " + damage);
+        assertTrue(state.getMessage().startsWith("The Knight slashes you"), state.getMessage());
+    }
 }

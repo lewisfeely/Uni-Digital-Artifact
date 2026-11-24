@@ -82,6 +82,18 @@ public class GameRenderer {
     private static final int ORC_FRAME_SIZE = 48;
     // orc_walk.png: four 48x48 frames (left foot up, down, right foot up, down), lined up like the swing sheet
     private final Image orcWalkImage = loadImage("orc_walk.png");
+    // the knight boss: 64x64 frames, so he stands far taller than one square
+    // knight_walk.png: 4 frames (left foot up, down, right foot up, down), the shield swinging against his stride
+    // knight_attack.png: 7 frames - 0 ready (your drawing), 1 sword raised, 2 sword tips forward,
+    //                    3 swoop out, 4 swoop down, 5 the hit, 6 follow-through
+    private final Image knightWalkImage = loadImage("knight_walk.png");
+    private final Image knightAttackImage = loadImage("knight_attack.png");
+    private static final int KNIGHT_FRAME_SIZE = 64;
+    private static final long KNIGHT_STEP_NANOS = 160_000_000L;   // next walk frame every 0.16 s
+    // in each frame his feet are 55px down and his body is centred 22px across,
+    // so he is drawn this far left and up from his square to stand on it
+    private static final int KNIGHT_OFFSET_X = -6;
+    private static final int KNIGHT_OFFSET_Y = -23;
     private static final long ORC_STEP_NANOS = 150_000_000L;   // next walk frame every 0.15 s
 
     // ---- dungeon walls ----
@@ -177,7 +189,7 @@ public class GameRenderer {
     // ------------------------------------------------------------------ combat drawing
 
     /**
-     * Draws every enemy (rats and orcs) with the right animation frame, facing the right way,
+     * Draws every enemy (rats, orcs and the knight) with the right animation frame, facing the right way,
      * plus its warning "!" and health bar.
      */
     private void drawEnemies(GraphicsContext gc, GameState state, long now) {
@@ -194,16 +206,19 @@ public class GameRenderer {
             double py = enemy.getY() * TILE_SIZE;
 
             // ---- the sprite: each type has its own sheet ----
-            boolean isOrc = enemy.getType() == Enemy.Type.ORC;
-            if (isOrc) {
-                drawOrc(gc, enemy, px, py, now);
-            } else {
-                drawRat(gc, enemy, px, py, now);
+            switch (enemy.getType()) {
+                case ORC -> drawOrc(gc, enemy, px, py, now);
+                case KNIGHT -> drawKnight(gc, enemy, px, py, now);
+                default -> drawRat(gc, enemy, px, py, now);
             }
 
             // ---- shared by every enemy type ----
-            // the orc's art reaches above his square, so his "!" and health bar sit higher
-            double topY = isOrc ? py - 8 : py + 6;
+            // the bigger enemies reach above their square, so their "!" and health bar sit higher
+            double topY = switch (enemy.getType()) {
+                case ORC -> py - 8;
+                case KNIGHT -> py - 28;   // above the plume on his helmet
+                default -> py + 6;
+            };
 
             // a red "!" above an enemy that is about to attack
             if (enemy.getState() == Enemy.State.WINDUP) {
@@ -244,6 +259,53 @@ public class GameRenderer {
         }
         gc.drawImage(ratSheet, frame * frameSize, 0, frameSize, frameSize, 0, 0, TILE_SIZE, TILE_SIZE);
         gc.restore();
+    }
+
+    /**
+     * Draws the knight boss. While chasing he marches using knight_walk.png; otherwise he uses
+     * knight_attack.png. His frames are 64x64 - twice the size of a square - and his art swings
+     * to the right of the picture, so it is mirrored when he faces left.
+     */
+    private void drawKnight(GraphicsContext gc, Enemy enemy, double px, double py, long now) {
+        boolean walking = enemy.getState() == Enemy.State.CHASE;
+        Image sheet = walking ? knightWalkImage : knightAttackImage;
+        int frame;
+        if (walking) {
+            frame = (int) ((now / KNIGHT_STEP_NANOS) % 4);   // 0, 1, 2, 3, 0, 1...
+        } else {
+            frame = switch (enemy.getState()) {
+                // the warning: first half sword raised, second half it tips forward ready to come over
+                case WINDUP -> enemy.getStateTimer() > enemy.getWindupTime() / 2 ? 1 : 2;
+                case BITE -> knightSwoopFrame(enemy.getStateTimer());   // the swoop: frames 3, 4, 5
+                case COOLDOWN -> 6;                              // follow-through
+                default -> 0;                                    // standing still: your drawing
+            };
+        }
+        gc.save();
+        if (enemy.isFacingLeft()) {
+            gc.translate(px + TILE_SIZE, py);
+            gc.scale(-1, 1);
+        } else {
+            gc.translate(px, py);
+        }
+        gc.drawImage(sheet, frame * KNIGHT_FRAME_SIZE, 0, KNIGHT_FRAME_SIZE, KNIGHT_FRAME_SIZE,
+                KNIGHT_OFFSET_X, KNIGHT_OFFSET_Y, KNIGHT_FRAME_SIZE, KNIGHT_FRAME_SIZE);
+        gc.restore();
+    }
+
+    /**
+     * Splits the knight's quick slash (Enemy.BITE_TIME, 0.15 s) into thirds:
+     * swoop out (3), swoop down (4), then the hit (5). The timer counts down,
+     * so the most time left means the start of the swing.
+     */
+    private int knightSwoopFrame(double timeLeft) {
+        double done = 1 - timeLeft / Enemy.BITE_TIME;   // 0 at the start of the slash, 1 at the end
+        if (done < 1.0 / 3) {
+            return 3;
+        } else if (done < 2.0 / 3) {
+            return 4;
+        }
+        return 5;
     }
 
     /**

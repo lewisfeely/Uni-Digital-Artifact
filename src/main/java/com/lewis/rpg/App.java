@@ -31,8 +31,9 @@ public class App extends Application {
      * Swap test_small.txt for level1.txt once level1.txt has its '+' stairs.
      */
     private static final String[] LEVEL_FILES = {
-            "/levels/test_small.txt",
-            "/levels/level2.txt"
+            "/levels/level1.txt",
+            "/levels/level2.txt",
+            "/levels/level3.txt"
     };
 
     // ---- the two halves of the game: the rules and the drawing ----

@@ -144,6 +144,10 @@ public final class LevelLoader {
                     case 'K' -> tiles[row][col] = Tile.KEY;
                     case 'R' -> tiles[row][col] = Tile.CHECKPOINT;
                     case 'T' -> tiles[row][col] = Tile.WALL_TORCH;
+                    case 'B' -> {
+                        tiles[row][col] = Tile.FLOOR;
+                        enemies.add(Enemy.knight(row, col));   // B for boss
+                    }
                     case 'O' -> {
                         tiles[row][col] = Tile.FLOOR;
                         enemies.add(Enemy.orc(row, col));

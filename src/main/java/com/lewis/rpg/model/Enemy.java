@@ -22,7 +22,7 @@ public class Enemy extends Entity {
     public enum State { IDLE, CHASE, WINDUP, BITE, COOLDOWN }
 
     /** The kinds of enemy - the renderer uses this to pick the sprite sheet. */
-    public enum Type { RAT, ORC }
+    public enum Type { RAT, ORC, KNIGHT }
 
     // ---- timings, in seconds, shared by every enemy (the rest are per enemy, below) ----
     public static final double BITE_TIME = 0.15;       // how long the attack hitbox exists
@@ -95,6 +95,23 @@ public class Enemy extends Entity {
                 10, 15,        // damage (min, max)
                 15,           // sight range
                 20);         // gold
+    }
+
+    /**
+     * The knight: the boss. Drawn at 64x64 so he towers over everything else, with a
+     * hurtbox and sword reach to match. Tough, hits hard, and pays out a fortune.
+     */
+    public static Enemy knight(int row, int col) {
+        return new Enemy(Type.KNIGHT,
+                0.6,         // windup: he raises his sword before every slash
+                0.45,        // step interval: heavy armour, a steady march
+                0.8,         // cooldown: recovers after each slash
+                "slashes",   // attack verb, for the message
+                "Knight", 120,   // name, max HP
+                row, col,    // where he starts
+                12, 18,      // damage (min, max)
+                10,          // sight range
+                100);        // gold
     }
 
     /** Runs one frame of the enemy's behaviour. Called by GameState.update() for every enemy. */
@@ -222,8 +239,26 @@ public class Enemy extends Entity {
 
     /** The square in front of the enemy, shrunk slightly (0.1 in from each side), where its bite lands. */
     public Hitbox getBiteHitbox() {
+        if (type == Type.KNIGHT) {
+            // his sword has a long reach: the square in front, plus a bit more on every side
+            return new Hitbox(getCol() + facing.getColChange() - 0.2,
+                    getRow() + facing.getRowChange() - 0.2, 1.4, 1.4);
+        }
         return new Hitbox(getCol() + facing.getColChange() + 0.1,
                 getRow() + facing.getRowChange() + 0.1, 0.8, 0.8);
+    }
+
+    /**
+     * Where this enemy can be hit. Rats and orcs use the normal one-square hurtbox from Entity;
+     * the knight is drawn much taller than his square, so his reaches up to cover his whole body
+     * (arrows aimed at his head should hit him).
+     */
+    @Override
+    public Hitbox getHurtbox() {
+        if (type == Type.KNIGHT) {
+            return new Hitbox(getX() + 0.05, getY() - 0.7, 0.9, 1.65);
+        }
+        return super.getHurtbox();   // the normal one, from Entity
     }
 
     /** Called by GameState when this enemy takes a hit, to start the blink. */
